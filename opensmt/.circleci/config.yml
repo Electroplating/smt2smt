@@ -1,0 +1,218 @@
+version: 2.1
+jobs:
+    formatter:
+        docker:
+            - image: usiverify/verify-env:archlinux
+              auth:
+                  username: mydockerhub-user
+                  password: $DOCKERHUB_PASSWORD
+
+        steps:
+            - checkout
+            - run:
+                  name: run clang formatter
+                  command: ./scripts/check_clang-format.sh
+
+    build-recent-gcc-debug:
+        docker:
+          - image: usiverify/verify-env:current
+            auth:
+                username: mydockerhub-user
+                password: $DOCKERHUB_PASSWORD
+            environment:
+                CMAKE_BUILD_TYPE: Debug
+                MODEL_VALIDATION: Dolmen
+                ENABLE_LINE_EDITING: ON
+                PARALLEL: ON
+                FLAGS: -Wall -Wextra -Werror
+                OSMT_INSTALL: ~/osmt-install
+        steps:
+            - checkout
+            - run:
+                name: Debug build gcc
+                command: |
+                    eval $(opam env)
+                    ./ci/run_ci_commands.sh
+
+    build-recent-gcc-release:
+        docker:
+          - image: usiverify/verify-env:current
+            auth:
+                username: mydockerhub-user
+                password: $DOCKERHUB_PASSWORD
+            environment:
+                CMAKE_BUILD_TYPE: Release
+                MODEL_VALIDATION: Dolmen
+                PARALLEL: OFF
+                FLAGS: -Wall -Wextra -Werror
+                OSMT_INSTALL: ~/osmt-install
+        steps:
+            - checkout
+            - run:
+                name: Release build gcc
+                command: |
+                    eval $(opam env)
+                    ./ci/run_ci_commands.sh
+
+    build-recent-clang-debug:
+        docker:
+          - image: usiverify/verify-env:current
+            auth:
+                username: mydockerhub-user
+                password: $DOCKERHUB_PASSWORD
+            environment:
+                CMAKE_BUILD_TYPE: Debug
+                MODEL_VALIDATION: Dolmen
+                ENABLE_LINE_EDITING: ON
+                PARALLEL: ON
+                FLAGS: -Wall -Wextra -Werror -fsanitize=signed-integer-overflow,address,undefined
+                OSMT_INSTALL: ~/osmt-install
+        steps:
+            - checkout
+            - run:
+                name: Setup clang
+                command: sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/clang++ 60
+            - run:
+                name: Debug build llvm
+                command: |
+                    eval $(opam env)
+                    ./ci/run_ci_commands.sh
+
+    build-recent-clang-release:
+        docker:
+          - image: usiverify/verify-env:current
+            auth:
+                username: mydockerhub-user
+                password: $DOCKERHUB_PASSWORD
+            environment:
+                CMAKE_BUILD_TYPE: Release
+                MODEL_VALIDATION: Dolmen
+                PARALLEL: ON
+                FLAGS: -Wall -Wextra -Werror
+                OSMT_INSTALL: ~/osmt-install
+        steps:
+            - checkout
+            - run:
+                name: Setup clang
+                command: sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/clang++ 60
+            - run:
+                name: Release build llvm
+                command: |
+                    eval $(opam env)
+                    ./ci/run_ci_commands.sh
+
+    build-fedora-debug:
+        docker:
+            - image: usiverify/verify-env:fedora
+              auth:
+                username: mydockerhub-user
+                password: $DOCKERHUB_PASSWORD
+              environment:
+                CMAKE_BUILD_TYPE: Debug
+                MODEL_VALIDATION: Dolmen
+                ENABLE_LINE_EDITING: ON
+                PARALLEL: ON
+                FLAGS: -Wall -Wextra -Werror
+                OSMT_INSTALL: ~/osmt-install
+
+        steps:
+            - checkout
+            - run:
+                name: Debug build gcc in Fedora
+                command: |
+                    eval $(opam env)
+                    ./ci/run_ci_commands.sh
+
+    build-fedora-release:
+        docker:
+            - image: usiverify/verify-env:fedora
+              auth:
+                username: mydockerhub-user
+                password: $DOCKERHUB_PASSWORD
+              environment:
+                CMAKE_BUILD_TYPE: Release
+                MODEL_VALIDATION: Dolmen
+                PARALLEL: OFF
+                FLAGS: -Wall -Wextra -Werror
+                OSMT_INSTALL: ~/osmt-install
+        steps:
+            - checkout
+            - run:
+                name: Release build gcc in Fedora
+                command: |
+                    eval $(opam env)
+                    ./ci/run_ci_commands.sh
+
+    build-fedora-release-static:
+        docker:
+            - image: usiverify/verify-env:fedora
+              auth:
+                username: mydockerhub-user
+                password: $DOCKERHUB_PASSWORD
+              environment:
+                CMAKE_BUILD_TYPE: Release
+                PARALLEL: ON
+                FLAGS: -Wall -Wextra -Werror
+                OSMT_INSTALL: ~/osmt-install
+        steps:
+            - checkout
+            - run:
+                name: Release static build gcc in Fedora
+                command: |
+                  ./ci/build_maximally_static.sh
+                  ! ldd ./build/opensmt
+
+    build-macos:
+        macos:
+            xcode: 15.4.0
+        resource_class: macos.m1.medium.gen1
+        steps:
+            - run:
+                name: Packages
+                command: |
+                  brew install cmake
+                  brew install gmp
+                  brew install bison
+                  brew install flex
+            - checkout
+            - run:
+                name: Store path
+                command: echo 'export PATH=/opt/homebrew/opt/flex/bin:/opt/homebrew/opt/bison/bin:$PATH' >> $BASH_ENV
+            - run:
+                name: Release build OS X
+                environment:
+                    CMAKE_BUILD_TYPE: Release
+                    PARALLEL: ON
+                    FLAGS: -Wall -Wextra -Werror
+                    OSMT_INSTALL: ~/osmt-install
+                command: ./ci/run_ci_commands.sh
+
+workflows:
+  build-test:
+      jobs:
+        - formatter
+        - build-fedora-debug:
+          filters: &filters-build-test
+            tags:
+              only: /^v.*/
+        - build-fedora-release:
+          filters:
+            <<: *filters-build-test
+        - build-fedora-release-static:
+          filters:
+            <<: *filters-build-test
+        - build-recent-gcc-debug:
+          filters:
+            <<: *filters-build-test
+        - build-recent-gcc-release:
+          filters:
+            <<: *filters-build-test
+        - build-recent-clang-debug:
+          filters:
+            <<: *filters-build-test
+        - build-recent-clang-release:
+          filters:
+            <<: *filters-build-test
+        - build-macos:
+          filters:
+            <<: *filters-build-test

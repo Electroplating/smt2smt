@@ -1,0 +1,75 @@
+/*
+ * Copyright (c) 2022, Antti Hyvarinen <antti.hyvarinen@gmail.com>
+ * Copyright (c) 2022, Seyedmasoud Asadzadeh <seyedmasoud.asadzadeh@usi.ch>
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
+#include "LookaheadSplitter.h"
+
+namespace opensmt::parallel {
+
+LookaheadSMTSolver::LALoopRes LookaheadSplitter::solveLookahead() {
+
+    auto [result, node] = buildAndTraverse<LASplitNode, SplitBuildConfig>(SplitBuildConfig(*this));
+
+    if (result == LALoopRes::unknown_final) {
+        copySplits(*node);
+        assert(static_cast<int>(splitContext.getCurrentSplitCount()) == splitContext.splitTargetNumber());
+    }
+
+    return result;
+}
+
+bool LookaheadSplitter::createSplitLookahead(LASplitNode & n)
+{
+    // Create a split instance and add it to node n.
+    assert(n.sd == nullptr);
+    n.sd = std::make_unique<SplitData>();
+    SplitData& sd = *n.sd;
+    printf("; Outputing an instance:\n; ");
+    Lit p = lit_Undef;
+    for (int i = 0; i < decisionLevel(); i++) {
+        Lit l = trail[trail_lim[i]];
+        if (p != l) {
+            // In cases where the LA solver couldn't propagate due to
+            // literal being already assigned, the literal may be
+            // duplicated.  Do not report duplicates.
+            printf("%s%d ", sign(l) ? "-" : "", var(l));
+            sd.addConstraint({l});
+        }
+        p = l;
+    }
+    printf("\n");
+
+    assert(ok);
+    return true;
+}
+
+void LookaheadSplitter::copySplits(LASplitNode const & root)
+{
+
+    vec<LASplitNode const *> queue;
+    queue.push(&root);
+
+    Map <LASplitNode const *,bool,LASplitNode::Hash> seen;
+
+    // This is buggy: We need to pop the instances once all their children have been processed.
+    while (queue.size() != 0) {
+        LASplitNode const * n = queue.last();
+        if (!seen.has(n)) {
+            seen.insert(n, true);
+            if (n->c1 != nullptr) {
+                assert(n->c2 != nullptr);
+                queue.push(n->getC1());
+                queue.push(n->getC2());
+            }
+            continue;
+        }
+        queue.pop();
+        if (n->sd != nullptr)
+            splitContext.insertSplitData(std::move(*n->sd));
+    }
+}
+
+}

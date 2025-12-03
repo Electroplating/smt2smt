@@ -1,0 +1,4 @@
+sat
+((X 2))
+unsat
+(error "pipe reader: unbalanced parentheses")
