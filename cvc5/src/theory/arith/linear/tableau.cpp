@@ -114,6 +114,10 @@ void Tableau::addRow(ArithVar basic,
 
   d_basic2RowIndex.set(basic, newRow);
   d_rowIndex2basic.set(newRow, basic);
+  
+  // Initialize varTypes for quasi-basic support (migrated from OpenSMT)
+  ensureVarTypesSize(basic);
+  d_varTypes[basic] = VarType::BASIC;
 
 
   if(TraceIsOn("matrix")){ printMatrix(); }
@@ -189,6 +193,64 @@ double Tableau::avgRowComplexity() const{
 
 void Tableau::printBasicRow(ArithVar basic, std::ostream& out){
   printRow(basicToRowIndex(basic), out);
+}
+
+// Quasi-basic variable support implementation
+// Migrated from OpenSMT Tableau.cc
+
+void Tableau::ensureVarTypesSize(ArithVar v) {
+  while(static_cast<ArithVar>(d_varTypes.size()) <= v) {
+    d_varTypes.push_back(VarType::NONE);
+  }
+}
+
+void Tableau::normalizeRowForQuasiBasic(ArithVar v) {
+  // This is a simplified version of OpenSMT's normalizeRow
+  // In cvc5, we work with the matrix directly, so normalization
+  // happens during pivot operations. This is mainly a placeholder
+  // for future enhancements.
+  Assert(isQuasiBasic(v));
+  // The actual normalization is handled by the matrix structure
+  // during pivot operations in cvc5
+}
+
+void Tableau::quasiToBasic(ArithVar v) {
+  Assert(isQuasiBasic(v));
+  
+  // In cvc5, quasi-basic variables are those that have a row but
+  // are not in d_basic2RowIndex. We need to ensure the row is properly
+  // set up in the basic mapping.
+  // Note: This is a simplified implementation. Full implementation would
+  // need to rebuild column indices similar to OpenSMT.
+  
+  ensureVarTypesSize(v);
+  d_varTypes[v] = VarType::BASIC;
+  
+  // The row should already exist in the matrix, we just need to
+  // ensure it's tracked as basic. However, in cvc5's architecture,
+  // rows are added via addRow() which sets up the basic mapping.
+  // This method is mainly for converting existing quasi-basic vars.
+  
+  Trace("tableau::quasi") << "quasiToBasic(" << v << ")" << endl;
+}
+
+void Tableau::basicToQuasi(ArithVar v) {
+  Assert(isBasic(v));
+  
+  // Remove from basic tracking but keep the row in the matrix
+  // In cvc5, we can't easily remove the row without affecting
+  // the matrix structure, so we mark it as quasi-basic but
+  // keep the basic mapping for now.
+  // Full implementation would remove column indices.
+  
+  ensureVarTypesSize(v);
+  d_varTypes[v] = VarType::QUASIBASIC;
+  
+  // Note: In a full implementation, we would:
+  // 1. Remove row from column indices (removeRowFromColumn)
+  // 2. Keep the row in the matrix for later restoration
+  
+  Trace("tableau::quasi") << "basicToQuasi(" << v << ")" << endl;
 }
 
 }  // namespace arith

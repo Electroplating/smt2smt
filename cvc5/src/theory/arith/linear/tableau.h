@@ -40,6 +40,10 @@ namespace arith::linear {
 class Tableau : public Matrix<Rational> {
 public:
 private:
+  // Variable type enumeration for quasi-basic optimization
+  // Migrated from OpenSMT Tableau.h
+  enum class VarType : char { NONE, BASIC, NONBASIC, QUASIBASIC };
+  
   typedef DenseMap<RowIndex> BasicToRowMap;
   // Set of all of the basic variables in the tableau.
   // ArithVarMap<RowIndex> : ArithVar |-> RowIndex
@@ -48,6 +52,10 @@ private:
   // RowIndex |-> Basic Variable
   typedef DenseMap<ArithVar> RowIndexToBasicMap;
   RowIndexToBasicMap d_rowIndex2basic;
+  
+  // Variable type tracking for quasi-basic optimization
+  // Migrated from OpenSMT: tracks whether variables are BASIC, NONBASIC, or QUASIBASIC
+  std::vector<VarType> d_varTypes;
 
 public:
 
@@ -62,6 +70,22 @@ public:
   bool isBasic(ArithVar v) const{
     return d_basic2RowIndex.isKey(v);
   }
+  
+  // Quasi-basic variable support (migrated from OpenSMT)
+  bool isQuasiBasic(ArithVar v) const {
+    if(v >= static_cast<ArithVar>(d_varTypes.size())) {
+      return false;
+    }
+    return d_varTypes[v] == VarType::QUASIBASIC;
+  }
+  
+  // Convert quasi-basic variable to basic
+  // Migrated from OpenSMT Tableau::quasiToBasic()
+  void quasiToBasic(ArithVar v);
+  
+  // Convert basic variable to quasi-basic
+  // Migrated from OpenSMT Tableau::basicToQuasi()
+  void basicToQuasi(ArithVar v);
 
   void debugPrintIsBasic(ArithVar v) const {
     if(isBasic(v)){
@@ -149,12 +173,31 @@ public:
 
   /* Returns the average complexity of the rows in the tableau. */
   double avgRowComplexity() const;
+  
+  /* Returns the row size (number of non-zero entries) for shortest poly selection */
+  // Migrated from OpenSMT Tableau::getPolySize()
+  uint32_t getRowSize(ArithVar basic) const {
+    return basicRowLength(basic);
+  }
+  
+  /* Returns the column length (number of rows containing this variable) */
+  // Migrated from OpenSMT Tableau::getColumn().size()
+  uint32_t getColumnLength(ArithVar nonBasic) const {
+    return getColLength(nonBasic);
+  }
 
   void printBasicRow(ArithVar basic, std::ostream& out);
 
 private:
   /* Changes the basic variable on the row for basicOld to basicNew. */
   void rowPivot(ArithVar basicOld, ArithVar basicNew, CoefficientChangeCallback& cb);
+  
+  // Helper to ensure varTypes vector is large enough
+  void ensureVarTypesSize(ArithVar v);
+  
+  // Normalize row by eliminating basic variables (for quasi-basic conversion)
+  // Migrated from OpenSMT Tableau::normalizeRow()
+  void normalizeRowForQuasiBasic(ArithVar v);
 
 };/* class Tableau */
 

@@ -234,6 +234,12 @@ private:
    * The ordered heap for the variables that are in ErrorSet.
    */
   FocusSet d_focus;
+  
+  /**
+   * Reference to Tableau for shortest polynomial selection
+   * Migrated from OpenSMT: needed for getRowSize()
+   */
+  const Tableau* d_tableau;
 
 
   /**
@@ -287,6 +293,14 @@ public:
            ArithVariables& var,
            TableauSizes tabSizes,
            BoundCountingLookup boundLookup);
+  
+  // Set tableau reference for shortest polynomial selection
+  // Migrated from OpenSMT
+  void setTableau(const Tableau* tab) { d_tableau = tab; }
+  
+  // Get row size for shortest polynomial selection
+  // Migrated from OpenSMT Simplex::getBasicVarToFixByShortestPoly()
+  uint32_t getRowSize(ArithVar basic) const;
 
   typedef ErrorInfoMap::const_iterator error_iterator;
   error_iterator errorBegin() const { return d_errInfo.begin(); }
