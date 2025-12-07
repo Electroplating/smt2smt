@@ -32,6 +32,17 @@ namespace theory {
 namespace arith::linear {
 
 /**
+ * Variable type in the tableau.
+ * Migrated from OpenSMT to support quasi-basic variables.
+ */
+enum class VarType : char {
+  NONE,      // Variable not yet processed
+  BASIC,     // Basic variable (has a row in the tableau)
+  NONBASIC,  // Non-basic variable (has a column in the tableau)
+  QUASIBASIC // Quasi-basic variable (has a row but no active bounds)
+};
+
+/**
  * A Tableau is a Rational matrix that keeps its rows in solved form.
  * Each row has a basic variable with coefficient -1 that is solved.
  * Tableau is optimized for pivoting.
@@ -49,6 +60,10 @@ private:
   typedef DenseMap<ArithVar> RowIndexToBasicMap;
   RowIndexToBasicMap d_rowIndex2basic;
 
+  // Variable type tracking (migrated from OpenSMT)
+  // Maps ArithVar -> VarType to track BASIC, NONBASIC, QUASIBASIC
+  DenseMap<VarType> d_varTypes;
+
 public:
 
   Tableau() : Matrix<Rational>(Rational(0)) {}
@@ -60,12 +75,62 @@ public:
   typedef MatrixEntry<Rational> Entry;
 
   bool isBasic(ArithVar v) const{
+    // A variable is basic if it has a row AND is not quasi-basic
+    if (!d_basic2RowIndex.isKey(v)) {
+      return false;
+    }
+    // If it's quasi-basic, it's not considered "basic" for simplex purposes
+    return !isQuasiBasic(v);
+  }
+
+  /**
+   * Check if a variable is quasi-basic (has a row but no active bounds).
+   * Migrated from OpenSMT.
+   */
+  bool isQuasiBasic(ArithVar v) const {
+    return d_varTypes.isKey(v) && d_varTypes[v] == VarType::QUASIBASIC;
+  }
+
+  /**
+   * Check if a variable has a row in the tableau (basic or quasi-basic).
+   * Migrated from OpenSMT.
+   */
+  bool hasRow(ArithVar v) const {
     return d_basic2RowIndex.isKey(v);
+  }
+
+  /**
+   * Check if a variable is non-basic.
+   * Migrated from OpenSMT.
+   */
+  bool isNonBasic(ArithVar v) const {
+    return d_varTypes.isKey(v) && d_varTypes[v] == VarType::NONBASIC;
+  }
+
+  /**
+   * Check if a variable has been processed by the tableau.
+   * Migrated from OpenSMT.
+   */
+  bool isProcessed(ArithVar v) const {
+    return d_varTypes.isKey(v) && d_varTypes[v] != VarType::NONE;
+  }
+
+  /**
+   * Get the variable type.
+   * Migrated from OpenSMT.
+   */
+  VarType getVarType(ArithVar v) const {
+    if (!d_varTypes.isKey(v)) {
+      return VarType::NONE;
+    }
+    return d_varTypes[v];
   }
 
   void debugPrintIsBasic(ArithVar v) const {
     if(isBasic(v)){
       Trace("model") << v << " is basic." << std::endl;
+    }else if(isQuasiBasic(v)){
+      Trace("model") << v << " is quasi-basic." << std::endl;
     }else{
       Trace("model") << v << " is non-basic." << std::endl;
     }
@@ -152,9 +217,33 @@ public:
 
   void printBasicRow(ArithVar basic, std::ostream& out);
 
+  /**
+   * Convert a quasi-basic variable to basic.
+   * Migrated from OpenSMT.
+   */
+  void quasiToBasic(ArithVar v);
+
+  /**
+   * Convert a basic variable to quasi-basic.
+   * Migrated from OpenSMT.
+   */
+  void basicToQuasi(ArithVar v);
+
 private:
   /* Changes the basic variable on the row for basicOld to basicNew. */
   void rowPivot(ArithVar basicOld, ArithVar basicNew, CoefficientChangeCallback& cb);
+
+  /**
+   * Ensure the tableau is ready for a variable (initialize VarType if needed).
+   * Migrated from OpenSMT.
+   */
+  void ensureTableauReadyFor(ArithVar v);
+
+  /**
+   * Set the variable type.
+   * Migrated from OpenSMT.
+   */
+  void setVarType(ArithVar v, VarType type);
 
 };/* class Tableau */
 

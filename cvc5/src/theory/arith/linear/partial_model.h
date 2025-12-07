@@ -114,6 +114,15 @@ private:
   /** Partial Map from Arithvar -> PreviousAssignment */
   DenseMap<DeltaRational> d_safeAssignment;
 
+  /** Migrated from OpenSMT: Last consistent assignment for incremental restore */
+  DenseMap<DeltaRational> d_lastConsistentAssignment;
+
+  /** Migrated from OpenSMT: Set of changed variables for incremental tracking */
+  DenseSet d_changedVars;
+
+  /** Migrated from OpenSMT: Vector of changed variables (for iteration order) */
+  ArithVarVec d_changedVarsVec;
+
   /** if d_vars.isKey(x), then x < d_numberOfVariables */
   ArithVar d_numberOfVariables;
 
@@ -274,6 +283,18 @@ public:
 
   /* Commits all variables assignments as safe.*/
   void commitAssignmentChanges();
+
+  /**
+   * Migrated from OpenSMT: Save current assignment as last consistent assignment.
+   * Only saves variables that have been changed (incremental).
+   */
+  void saveAssignment();
+
+  /**
+   * Migrated from OpenSMT: Restore assignment from last consistent assignment.
+   * Only restores variables that have been changed (incremental).
+   */
+  void restoreAssignment();
 
 
   bool lowerBoundIsZero(ArithVar x);

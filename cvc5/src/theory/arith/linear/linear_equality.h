@@ -653,6 +653,12 @@ public:
   DeltaRational computeRowBound(RowIndex ridx, bool rowUb, ArithVar skip) const;
 
 public:
+  /**
+   * Migrated from OpenSMT: Convert a quasi-basic variable to basic.
+   * This is called when a bound is activated for a quasi-basic variable.
+   */
+  void quasiToBasic(ArithVar v);
+
   void substitutePlusTimesConstant(ArithVar to, ArithVar from, const Rational& mult);
   void directlyAddToCoefficient(ArithVar row, ArithVar col, const Rational& mult);
 

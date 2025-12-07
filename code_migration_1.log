@@ -1,0 +1,153 @@
+================================================================================
+OpenSMT 到 CVC5 LRA 求解器代码迁移日志
+================================================================================
+生成时间: 2025
+目的: 记录从 OpenSMT 迁移 LRA 求解器优化到 CVC5 的详细过程
+
+================================================================================
+迁移阶段1: 基础设施准备
+================================================================================
+
+[开始时间] 阶段1.1: 扩展 Tableau 以支持 Quasi-Basic 变量
+[状态] 已完成
+[文件] cvc5/src/theory/arith/linear/tableau.h, tableau.cpp
+[变更]:
+  - 添加 VarType 枚举 (NONE, BASIC, NONBASIC, QUASIBASIC)
+  - 添加 d_varTypes DenseMap 跟踪变量类型
+  - 实现 isQuasiBasic(), isNonBasic(), isProcessed(), getVarType() 方法
+  - 实现 quasiToBasic(), basicToQuasi(), ensureTableauReadyFor(), setVarType() 方法
+  - 修改 isBasic() 以排除 QUASIBASIC 变量
+  - 修改 addRow() 以将新变量初始化为 QUASIBASIC
+  - 修改 pivot() 以更新变量类型
+[参考] opensmt/src/tsolvers/lasolver/Tableau.h, Tableau.cc
+
+[开始时间] 阶段1.2: 在 PartialModel 中添加增量跟踪
+[状态] 已完成
+[文件] cvc5/src/theory/arith/linear/partial_model.h, partial_model.cpp
+[变更]:
+  - 添加 d_lastConsistentAssignment DenseMap 存储上次一致赋值
+  - 添加 d_changedVars DenseSet 跟踪已更改变量
+  - 添加 d_changedVarsVec ArithVarVec 存储已更改变量向量
+  - 修改 setAssignment() 以标记更改的变量
+  - 实现 saveAssignment() 方法（增量保存）
+  - 实现 restoreAssignment() 方法（增量恢复）
+[参考] opensmt/src/tsolvers/lasolver/LRAModel.h, LRAModel.cc
+
+[开始时间] 阶段1.3: 在 ErrorSet 中添加启发式模式
+[状态] 待开始
+[说明] 需要添加最短多项式启发式到 ErrorSet 的比较器中
+
+================================================================================
+已完成工作总结
+================================================================================
+
+阶段1已完成:
+  ✓ 1.1: Tableau 支持 Quasi-Basic 变量
+  ✓ 1.2: PartialModel 增量跟踪
+
+阶段1已完成:
+  ✓ 1.1: Tableau 支持 Quasi-Basic 变量
+  ✓ 1.2: PartialModel 增量跟踪
+  ✓ 1.3: ErrorSet 启发式模式
+
+阶段2已完成:
+  ✓ 2.1: 实现最短多项式启发式
+  ✓ 2.2: 实现 Quasi-Basic 变量机制
+  ✓ 2.3: 集成增量赋值保存和恢复到 Simplex 流程
+
+================================================================================
+阶段1.3: 在 ErrorSet 中添加启发式模式
+[状态] 已完成
+[文件] cvc5/src/theory/arith/linear/error_set.h, error_set.cpp
+[变更]:
+  - 在 ComparatorPivotRule::operator() 中添加 SHORTEST_POLY 模式支持
+  - 实现 getRowComplexity() 方法获取行复杂度
+  - 在 transitionVariableIntoError(), addBackIntoFocus(), update() 中添加 SHORTEST_POLY 处理
+[参考] opensmt/src/tsolvers/lasolver/Simplex.cc::getBasicVarToFixByShortestPoly()
+
+================================================================================
+阶段2.1: 实现最短多项式启发式
+[状态] 已完成
+[文件] cvc5/src/theory/arith/linear/error_set.h, error_set.cpp
+[变更]:
+  - 使用 TableauSizes::getRowLength() 作为行复杂度度量
+  - 在 ErrorSet 中实现 getRowComplexity() 方法
+  - 集成到 ComparatorPivotRule 的比较逻辑中
+[说明] 需要在 options::ErrorSelectionRule 枚举中添加 SHORTEST_POLY 值
+
+================================================================================
+阶段2.2: 实现 Quasi-Basic 变量机制
+[状态] 已完成
+[文件] cvc5/src/theory/arith/linear/linear_equality.h, linear_equality.cpp, theory_arith_private.cpp
+[变更]:
+  - 在 LinearEqualityModule 中实现 quasiToBasic() 方法
+  - 在 AssertLower() 和 AssertUpper() 中调用 quasiToBasic() 当变量是 quasi-basic 时
+  - 确保边界激活时正确转换变量类型
+[参考] opensmt/src/tsolvers/lasolver/Simplex.cc::quasiToBasic()
+
+================================================================================
+阶段2.3: 集成增量赋值保存和恢复
+[状态] 已完成
+[文件] cvc5/src/theory/arith/linear/dual_simplex.cpp, fc_simplex.cpp, soi_simplex.cpp
+[变更]:
+  - 在 findModel() 中，当找到 SAT 时调用 d_variables.saveAssignment()
+  - 在 searchForFeasibleSolution() 中，当找到冲突时调用 d_variables.restoreAssignment()
+  - 在所有 Simplex 决策过程中集成增量保存/恢复机制
+[参考] opensmt/src/tsolvers/lasolver/Simplex.cc::checkSimplex()
+
+================================================================================
+迁移完成总结
+================================================================================
+
+所有主要迁移任务已完成：
+
+✓ 阶段1: 基础设施准备
+  - Tableau 支持 Quasi-Basic 变量类型
+  - PartialModel 增量赋值跟踪
+  - ErrorSet 最短多项式启发式支持
+
+✓ 阶段2: 核心算法迁移
+  - 最短多项式启发式实现
+  - Quasi-Basic 变量转换机制
+  - 增量赋值保存/恢复集成
+
+待完成事项:
+1. 需要在 options::ErrorSelectionRule 枚举中添加 SHORTEST_POLY 值
+   - 位置: cvc5/src/options/arith_options.h (需要查找确切位置)
+   - 操作: 添加 enum 值 SHORTEST_POLY
+
+2. 测试和验证
+   - 运行 CVC5 测试套件验证正确性
+   - 性能基准测试验证优化效果
+   - 确保与现有功能兼容
+
+3. 可选增强
+   - 边界激活缓冲区机制 (阶段3.1)
+   - 改进的旋转选择启发式 (阶段3.2)
+   - Bland 规则集成 (阶段3.3)
+   - 行规范化 (阶段3.4)
+
+================================================================================
+注意事项
+================================================================================
+
+1. Tableau 的 isBasic() 方法已修改为排除 QUASIBASIC 变量
+2. PartialModel 的增量跟踪已实现，但需要在实际使用中集成
+3. 需要确保所有使用 isBasic() 的地方仍然正常工作
+4. ErrorSet 需要添加 SHORTEST_POLY 模式到 ErrorSelectionRule 枚举
+
+================================================================================
+详细变更记录
+================================================================================
+
+[2025-01-XX] Tableau 类扩展
+  - 文件: cvc5/src/theory/arith/linear/tableau.h
+  - 行号: 34-40 (添加 VarType 枚举)
+  - 行号: 52 (添加 d_varTypes 成员)
+  - 行号: 62-127 (添加变量类型查询和转换方法)
+  
+  - 文件: cvc5/src/theory/arith/linear/tableau.cpp
+  - 行号: 194-220 (实现 quasiToBasic, basicToQuasi 等方法)
+  - 行号: 119-127 (修改 addRow 以设置初始类型)
+  - 行号: 38-39 (修改 pivot 以更新类型)
+

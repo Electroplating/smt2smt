@@ -391,6 +391,12 @@ public:
     return d_errInfo[a].getMetric();
   }
 
+  /**
+   * Migrated from OpenSMT: Get row complexity for shortest polynomial heuristic.
+   * Returns the complexity of the row for a basic variable.
+   */
+  uint32_t getRowComplexity(ArithVar a) const;
+
   ConstraintP getViolated(ArithVar a) const {
     return d_errInfo[a].getViolated();
   }

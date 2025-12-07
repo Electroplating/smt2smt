@@ -339,6 +339,13 @@ void ArithVariables::setAssignment(ArithVar x, const DeltaRational& r){
   if(!d_safeAssignment.isKey(x)){
     d_safeAssignment.set(x, vi.d_assignment);
   }
+  
+  // Migrated from OpenSMT: Track changed variables for incremental save/restore
+  if(!d_changedVars.isKey(x)){
+    d_changedVars.add(x);
+    d_changedVarsVec.push_back(x);
+  }
+  
   invalidateDelta();
 
   BoundsInfo prev;
@@ -356,6 +363,12 @@ void ArithVariables::setAssignment(ArithVar x, const DeltaRational& safe, const 
     }
   }else{
     d_safeAssignment.set(x, safe);
+  }
+
+  // Migrated from OpenSMT: Track changed variables for incremental save/restore
+  if(!d_changedVars.isKey(x)){
+    d_changedVars.add(x);
+    d_changedVarsVec.push_back(x);
   }
 
   invalidateDelta();
@@ -686,6 +699,38 @@ ArithVariables::UpperBoundCleanUp::UpperBoundCleanUp(ArithVariables* pm)
 void ArithVariables::UpperBoundCleanUp::operator()(AVCPair& p)
 {
   d_pm->popUpperBound(&p);
+}
+
+// Migrated from OpenSMT: Incremental assignment save/restore
+void ArithVariables::saveAssignment() {
+  for(ArithVarVec::const_iterator i = d_changedVarsVec.begin(), 
+      i_end = d_changedVarsVec.end(); i != i_end; ++i) {
+    ArithVar v = *i;
+    Assert(d_vars.isKey(v));
+    // Save current assignment as last consistent assignment
+    if(!d_lastConsistentAssignment.isKey(v)) {
+      d_lastConsistentAssignment.set(v, d_vars[v].d_assignment);
+    } else {
+      d_lastConsistentAssignment[v] = d_vars[v].d_assignment;
+    }
+  }
+  // Clear changed variables tracking
+  d_changedVars.purge();
+  d_changedVarsVec.clear();
+}
+
+void ArithVariables::restoreAssignment() {
+  for(ArithVarVec::const_iterator i = d_changedVarsVec.begin(), 
+      i_end = d_changedVarsVec.end(); i != i_end; ++i) {
+    ArithVar v = *i;
+    Assert(d_vars.isKey(v));
+    Assert(d_lastConsistentAssignment.isKey(v));
+    // Restore from last consistent assignment
+    d_vars[v].d_assignment = d_lastConsistentAssignment[v];
+  }
+  // Clear changed variables tracking
+  d_changedVars.purge();
+  d_changedVarsVec.clear();
 }
 
 }  // namespace arith

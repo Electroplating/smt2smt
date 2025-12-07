@@ -558,6 +558,11 @@ bool TheoryArithPrivate::AssertLower(ConstraintP constraint){
 
   d_partialModel.setLowerBoundConstraint(constraint);
 
+  // Migrated from OpenSMT: Convert quasi-basic to basic when bound is activated
+  if(d_tableau.isQuasiBasic(x_i)) {
+    d_linEq.quasiToBasic(x_i);
+  }
+
   if(d_cmEnabled){
     if(d_congruenceManager.isWatchedVariable(x_i)){
       int sgn = c_i.sgn();
@@ -697,6 +702,11 @@ bool TheoryArithPrivate::AssertUpper(ConstraintP constraint){
   //It is fine if this is NullConstraint
 
   d_partialModel.setUpperBoundConstraint(constraint);
+
+  // Migrated from OpenSMT: Convert quasi-basic to basic when bound is activated
+  if(d_tableau.isQuasiBasic(x_i)) {
+    d_linEq.quasiToBasic(x_i);
+  }
 
   if(d_cmEnabled){
     if(d_congruenceManager.isWatchedVariable(x_i)){

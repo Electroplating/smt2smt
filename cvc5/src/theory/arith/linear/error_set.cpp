@@ -261,6 +261,18 @@ bool ComparatorPivotRule::operator()(ArithVar v, ArithVar u) const {
         return cmp < 0;
       }
     }
+    // Migrated from OpenSMT: Shortest polynomial heuristic
+    // Selects the variable with the smallest row complexity
+    case options::ErrorSelectionRule::SHORTEST_POLY:
+    {
+      uint32_t v_complexity = d_errorSet->getRowComplexity(v);
+      uint32_t u_complexity = d_errorSet->getRowComplexity(u);
+      if(v_complexity == u_complexity){
+        return v > u;
+      }else{
+        return v_complexity > u_complexity;
+      }
+    }
   }
   Unreachable();
 }
@@ -276,6 +288,11 @@ void ErrorSet::update(ErrorInformation& ei){
         break;
       case options::ErrorSelectionRule::SUM_METRIC:
         ei.setMetric(sumMetric(ei.getVariable()));
+        d_focus.update(ei.getHandle(), ei.getVariable());
+        break;
+      case options::ErrorSelectionRule::SHORTEST_POLY:
+        // Migrated from OpenSMT: Update row complexity
+        ei.setMetric(getRowComplexity(ei.getVariable()));
         d_focus.update(ei.getHandle(), ei.getVariable());
         break;
       case options::ErrorSelectionRule::VAR_ORDER:
@@ -325,6 +342,10 @@ void ErrorSet::transitionVariableIntoError(ArithVar v) {
     case options::ErrorSelectionRule::SUM_METRIC:
       ei.setMetric(sumMetric(ei.getVariable()));
       break;
+    case options::ErrorSelectionRule::SHORTEST_POLY:
+      // Migrated from OpenSMT: Use row complexity as metric
+      ei.setMetric(getRowComplexity(v));
+      break;
     case options::ErrorSelectionRule::VAR_ORDER:
       // do nothing
       break;
@@ -354,6 +375,10 @@ void ErrorSet::addBackIntoFocus(ArithVar v) {
       break;
     case options::ErrorSelectionRule::SUM_METRIC:
       ei.setMetric(sumMetric(v));
+      break;
+    case options::ErrorSelectionRule::SHORTEST_POLY:
+      // Migrated from OpenSMT: Use row complexity as metric
+      ei.setMetric(getRowComplexity(v));
       break;
     case options::ErrorSelectionRule::VAR_ORDER:
       // do nothing
@@ -484,6 +509,13 @@ void ErrorSet::pushFocusInto(ArithVarVec& vec) const{
   for(focus_iterator i = focusBegin(), e = focusEnd(); i != e; ++i ){
     vec.push_back(*i);
   }
+}
+
+// Migrated from OpenSMT: Get row complexity for shortest polynomial heuristic
+uint32_t ErrorSet::getRowComplexity(ArithVar a) const {
+  Assert(inError(a));
+  // Use TableauSizes to get row complexity
+  return d_tableauSizes.getRowLength(a);
 }
 
 }  // namespace arith

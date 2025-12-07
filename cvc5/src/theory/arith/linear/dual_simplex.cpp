@@ -128,6 +128,8 @@ Result::Status DualSimplexDecisionProcedure::dualFindModel(bool exactResult)
   if (result == Result::UNKNOWN && d_errorSet.errorEmpty())
   {
     result = Result::SAT;
+    // Migrated from OpenSMT: Save assignment when SAT is found
+    d_variables.saveAssignment();
   }
 
   d_pivotsInRound.purge();
@@ -227,12 +229,19 @@ bool DualSimplexDecisionProcedure::searchForFeasibleSolution(uint32_t remainingI
     }
 
     if(conflict){
+      // Migrated from OpenSMT: Restore assignment when conflict is found
+      d_variables.restoreAssignment();
       return true;
     }
   }
   Assert(!d_errorSet.focusEmpty() || d_errorSet.errorEmpty());
   Assert(remainingIterations == 0 || d_errorSet.focusEmpty());
   Assert(d_errorSet.noSignals());
+
+  // Migrated from OpenSMT: Save assignment when SAT is found (no conflicts)
+  if(d_errorSet.errorEmpty()) {
+    d_variables.saveAssignment();
+  }
 
   return false;
 }

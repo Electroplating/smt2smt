@@ -1,0 +1,754 @@
+================================================================================
+CVC5 LRA (Linear Real Arithmetic) 求解器算法与数据结构分析
+================================================================================
+生成时间: 2025
+目的: 为代码迁移工作提供详细的技术文档
+
+================================================================================
+第一部分：关键函数 (Critical Functions)
+================================================================================
+
+1. 理论接口层 (Theory Interface Layer)
+--------------------------------------------------------------------------------
+
+1.1 TheoryArith 类 (src/theory/arith/theory_arith.h)
+  主要职责: 算术理论的顶层接口，协调线性和非线性算术求解
+  关键函数:
+    - preCheck(Effort level): 在事实队列处理前进行预检查
+    - postCheck(Effort level): 在事实队列处理后进行后检查
+    - preNotifyFact(TNode atom, bool pol, TNode fact, ...): 预处理事实通知
+    - propagate(Effort e): 传播理论文字
+    - explain(TNode n): 解释传播的文字
+    - collectModelValues(TheoryModel* m, ...): 收集模型值
+    - ppRewrite(TNode atom, ...): 预处理重写
+    - getEqualityStatus(TNode a, TNode b): 获取等式状态
+
+1.2 LinearSolver 类 (src/theory/arith/linear/linear_solver.h)
+  主要职责: 线性算术求解器的包装类
+  关键函数:
+    - finishInit(eq::EqualityEngine* ee): 完成初始化
+    - preRegisterTerm(TNode n): 预注册项
+    - propagate(Theory::Effort e): 传播理论文字
+    - explain(TNode n): 解释传播的文字
+    - preCheck(Theory::Effort level, bool newFacts): 预检查
+    - postCheck(Theory::Effort level): 后检查
+    - collectModelValues(const std::set<Node>& termSet, ...): 收集模型值
+    - presolve(): 预求解
+    - getEqualityStatus(TNode a, TNode b): 获取等式状态
+    - getCandidateModelValue(TNode var): 获取候选模型值
+
+2. Simplex 算法核心 (Simplex Algorithm Core)
+--------------------------------------------------------------------------------
+
+2.1 SimplexDecisionProcedure 基类 (src/theory/arith/linear/simplex.h)
+  主要职责: Simplex 决策过程的抽象基类
+  关键函数:
+    - findModel(bool exactResult): 查找模型（纯虚函数，由子类实现）
+    - constructInfeasiblityFunction(TimerStat& timer, ...): 构造不可行性函数
+    - tearDownInfeasiblityFunction(TimerStat& timer, ArithVar inf): 拆除不可行性函数
+    - adjustInfeasFunc(...): 调整不可行性函数
+    - addToInfeasFunc(...): 添加到不可行性函数
+    - removeFromInfeasFunc(...): 从不可行性函数移除
+    - reportConflict(ArithVar basic): 报告冲突
+    - maybeGenerateConflictForBasic(ArithVar basic): 可能为基础变量生成冲突
+    - checkBasicForConflict(ArithVar b): 检查基础变量冲突
+    - generateConflictForBasic(ArithVar basic): 为基础变量生成冲突
+    - standardProcessSignals(TimerStat& timer, IntStat& conflictStat): 标准信号处理
+
+2.2 DualSimplexDecisionProcedure 类 (src/theory/arith/linear/dual_simplex.h)
+  主要职责: 对偶 Simplex 算法实现
+  关键函数:
+    - findModel(bool exactResult): 实现查找模型
+    - dualFindModel(bool exactResult): 对偶查找模型
+    - searchForFeasibleSolution(uint32_t maxIterations): 搜索可行解
+    - processSignals(): 处理信号
+
+2.3 FCSimplexDecisionProcedure 类 (src/theory/arith/linear/fc_simplex.h)
+  主要职责: FC (Focused Conflict) Simplex 算法实现
+  关键函数:
+    - findModel(bool exactResult): 实现查找模型
+    - dualLikeImproveError(ArithVar evar): 对偶式改进错误
+    - primalImproveError(ArithVar evar): 原始改进错误
+    - dualLike(): 对偶式处理
+
+3. 约束管理 (Constraint Management)
+--------------------------------------------------------------------------------
+
+3.1 Constraint 类 (src/theory/arith/linear/constraint.h)
+  主要职责: 表示单个算术约束
+  关键函数:
+    - getType(): 获取约束类型（下界、上界、等式、不等式）
+    - getVariable(): 获取约束变量
+    - getValue(): 获取约束值（DeltaRational）
+    - isEquality(): 是否为等式约束
+    - isDisequality(): 是否为不等式约束
+    - isLowerBound(): 是否为下界约束
+    - isUpperBound(): 是否为上界约束
+    - split(): 分割约束
+    - canBePropagated(): 是否可以传播
+    - setCanBePropagated(): 设置可传播
+    - propagate(): 传播约束
+    - externalExplainForPropagation(TNode n): 外部解释传播
+    - externalExplainConflict(): 外部解释冲突
+    - impliedByFarkas(...): 由 Farkas 引理推导
+    - satisfiedBy(const DeltaRational& dr): 是否满足
+
+3.2 ConstraintDatabase 类 (src/theory/arith/linear/constraint.h)
+  主要职责: 管理所有约束的数据库
+  关键函数:
+    - addLiteral(TNode lit): 添加文字约束
+    - lookup(TNode literal): 查找约束
+    - hasLiteral(TNode literal): 是否有文字约束
+    - hasMorePropagations(): 是否有更多传播
+    - nextPropagation(): 下一个传播
+    - addVariable(ArithVar v): 添加变量
+    - removeVariable(ArithVar v): 移除变量
+    - getBestImpliedBound(...): 获取最佳隐含界
+    - lookupConstraint(...): 查找约束
+    - getConstraint(...): 获取约束
+    - ensureConstraint(...): 确保约束存在
+
+4. 表结构管理 (Tableau Management)
+--------------------------------------------------------------------------------
+
+4.1 Tableau 类 (src/theory/arith/linear/tableau.h)
+  主要职责: 维护 Simplex 表（稀疏矩阵形式）
+  关键函数:
+    - isBasic(ArithVar v): 判断变量是否为基础变量
+    - basicToRowIndex(ArithVar x): 基础变量到行索引
+    - rowIndexToBasic(RowIndex rid): 行索引到基础变量
+    - addRow(ArithVar basicVar, ...): 添加行
+    - pivot(ArithVar basicOld, ArithVar basicNew, ...): 执行转轴操作
+    - removeBasicRow(ArithVar basic): 移除基础行
+    - basicRowLength(ArithVar basic): 获取基础行长度
+    - substitutePlusTimesConstant(...): 替换加常数倍
+    - directlyAddToCoefficient(...): 直接添加到系数
+    - rowComplexity(ArithVar basic): 行复杂度
+    - avgRowComplexity(): 平均行复杂度
+    - printBasicRow(ArithVar basic, ...): 打印基础行
+
+4.2 Matrix 类 (src/theory/arith/linear/matrix.h)
+  主要职责: 稀疏矩阵实现
+  关键数据结构:
+    - MatrixEntry<T>: 矩阵条目，包含行索引、列变量、系数
+    - 使用双向链表结构存储行和列
+
+5. 部分模型管理 (Partial Model Management)
+--------------------------------------------------------------------------------
+
+5.1 PartialModel 类 (src/theory/arith/linear/partial_model.h)
+  主要职责: 维护变量的赋值和边界
+  关键函数:
+    - setAssignment(ArithVar x, const DeltaRational& r): 设置赋值
+    - getAssignment(ArithVar x): 获取赋值
+    - setLowerBoundConstraint(ConstraintP lb): 设置下界约束
+    - setUpperBoundConstraint(ConstraintP ub): 设置上界约束
+    - getLowerBound(ArithVar x): 获取下界
+    - getUpperBound(ArithVar x): 获取上界
+    - equalsLowerBound(ArithVar x, const DeltaRational& c): 是否等于下界
+    - equalsUpperBound(ArithVar x, const DeltaRational& c): 是否等于上界
+    - cmpToLowerBound(...): 与下界比较
+    - cmpToUpperBound(...): 与上界比较
+    - assignmentIsConsistent(ArithVar x): 赋值是否一致
+    - hasLowerBound(ArithVar x): 是否有下界
+    - hasUpperBound(ArithVar x): 是否有上界
+    - boundsAreEqual(ArithVar x): 边界是否相等
+    - revertAssignmentChanges(): 撤销赋值更改
+    - commitAssignmentChanges(): 提交赋值更改
+
+5.2 ArithVariables 类 (src/theory/arith/linear/partial_model.h)
+  主要职责: 管理算术变量
+  关键函数:
+    - getNumberOfVariables(): 获取变量数量
+    - hasArithVar(TNode x): 是否有算术变量
+    - hasNode(ArithVar a): 是否有节点
+    - asArithVar(TNode x): 转换为算术变量
+    - asNode(ArithVar a): 转换为节点
+    - allocateVariable(): 分配变量
+    - releaseArithVar(ArithVar v): 释放变量
+    - isInteger(ArithVar x): 是否为整数变量
+    - isAuxiliary(ArithVar x): 是否为辅助变量
+    - integralAssignment(ArithVar x): 赋值是否为整数
+
+6. 线性等式管理 (Linear Equality Management)
+--------------------------------------------------------------------------------
+
+6.1 LinearEqualityModule 类 (src/theory/arith/linear/linear_equality.h)
+  主要职责: 管理线性等式约束
+  关键函数:
+    - update(): 更新表结构和部分模型的关系
+    - pivotAndUpdate(): 转轴并更新
+    - 提供 Tableau 和 PartialModel 之间的协调
+
+7. 错误集管理 (Error Set Management)
+--------------------------------------------------------------------------------
+
+7.1 ErrorSet 类 (src/theory/arith/linear/error_set.h)
+  主要职责: 管理违反边界的变量集合
+  关键函数:
+    - 维护一个优先队列，包含所有违反边界的基础变量
+    - 支持三种模式：Collection、Difference Queue、Variable Order Queue
+    - dequeueInconsistentBasicVariable(): 出队不一致的基础变量
+
+7.2 ErrorInformation 类 (src/theory/arith/linear/error_set.h)
+  主要职责: 存储变量的错误信息
+  关键数据:
+    - d_variable: 错误变量
+    - d_violated: 违反的约束
+    - d_sgn: 需要移动的方向符号
+    - d_relaxed: 边界是否已松弛
+    - d_inFocus: 是否在焦点集中
+    - d_amount: 变量与边界的差值
+
+8. 推理管理 (Inference Management)
+--------------------------------------------------------------------------------
+
+8.1 InferenceManager 类 (src/theory/arith/inference_manager.h)
+  主要职责: 管理推理和引理
+  关键函数:
+    - addPendingLemma(...): 添加待处理引理
+    - flushWaitingLemmas(): 刷新等待的引理
+    - clearWaitingLemmas(): 清除等待的引理
+    - hasUsed(): 是否已使用
+    - hasWaitingLemma(): 是否有等待的引理
+    - propagateLit(TNode lit): 传播文字
+    - hasPropagated(TNode lit): 是否已传播
+
+9. 规范化处理 (Normalization)
+--------------------------------------------------------------------------------
+
+9.1 NormalForm 相关函数 (src/theory/arith/linear/normal_form.h)
+  主要职责: 将算术表达式转换为规范形式
+  关键概念:
+    - 变量列表 (var_list)
+    - 单项式 (monomial)
+    - 多项式 (polynomial)
+    - 有理数比较 (rational_cmp)
+    - 整数比较 (integer_cmp)
+    - 有理数等式 (rational_eq)
+    - 整数等式 (integer_eq)
+
+10. 分支定界 (Branch and Bound)
+--------------------------------------------------------------------------------
+
+10.1 BranchAndBound 类 (src/theory/arith/branch_and_bound.h)
+  主要职责: 为整数变量构造分支定界引理
+  关键函数:
+    - branchIntegerVariable(TNode var, Rational value): 分支整数变量
+
+================================================================================
+第二部分：数据结构 (Data Structures)
+================================================================================
+
+1. 核心数值类型
+--------------------------------------------------------------------------------
+
+1.1 DeltaRational (src/theory/arith/delta_rational.h)
+  用途: 表示带有无穷小的有理数，用于处理严格不等式
+  结构:
+    - Rational c: 非无穷小部分
+    - Rational k: 无穷小系数
+  表示: c + k*δ，其中 δ 是系统范围的符号无穷小
+  关键操作:
+    - sgn(): 符号
+    - infinitesimalSgn(): 无穷小部分符号
+    - cmp(const DeltaRational& other): 比较
+    - 算术运算: +, -, *, /
+    - floor(), ceiling(): 下取整、上取整
+    - isIntegral(): 是否为整数
+
+1.2 Rational (util/rational.h)
+  用途: 精确的有理数表示
+  用于: 系数、常数项、边界值
+
+1.3 Integer (util/integer.h)
+  用途: 大整数表示
+  用于: 整数变量的值
+
+2. 变量和约束标识
+--------------------------------------------------------------------------------
+
+2.1 ArithVar (src/theory/arith/linear/arithvar.h)
+  类型: typedef uint32_t ArithVar
+  用途: 算术变量的内部标识符
+  特殊值: ARITHVAR_SENTINEL
+
+2.2 ConstraintP
+  类型: Constraint* 的指针类型
+  用途: 指向约束对象的指针
+
+2.3 ConstraintCP
+  类型: const Constraint* 的指针类型
+  用途: 指向常量约束对象的指针
+
+2.4 RowIndex
+  类型: typedef Index RowIndex
+  用途: 表中行的索引
+  特殊值: ROW_INDEX_SENTINEL
+
+2.5 EntryID
+  类型: typedef Index EntryID
+  用途: 矩阵条目的标识符
+  特殊值: ENTRYID_SENTINEL
+
+3. 约束类型和值集合
+--------------------------------------------------------------------------------
+
+3.1 ConstraintType (src/theory/arith/linear/constraint.h)
+  枚举类型:
+    - LowerBound: 下界约束 (>=)
+    - UpperBound: 上界约束 (<=)
+    - Equality: 等式约束 (=)
+    - Disequality: 不等式约束 (!=)
+
+3.2 ValueCollection (src/theory/arith/linear/constraint.h)
+  用途: 存储变量的所有约束集合
+  结构:
+    - 包含下界、上界、等式、不等式的约束指针
+  关键方法:
+    - hasLowerBound(), hasUpperBound(), hasEquality(), hasDisequality()
+    - getLowerBound(), getUpperBound(), getEquality(), getDisequality()
+    - add(ConstraintP c): 添加约束
+    - remove(ConstraintType t): 移除约束
+
+3.3 PerVariableDatabase (src/theory/arith/linear/constraint.h)
+  用途: 每个变量的约束数据库
+  结构:
+    - ValueCollection d_valueCollection: 值集合
+    - SortedConstraintMap: 排序的约束映射
+
+4. 表结构 (Tableau)
+--------------------------------------------------------------------------------
+
+4.1 Tableau 类 (src/theory/arith/linear/tableau.h)
+  用途: 维护 Simplex 表，以稀疏矩阵形式存储
+  核心概念:
+    - 基础变量 (Basic Variables): 在表中用行表示
+    - 非基础变量 (Non-basic Variables): 在表中用列表示
+    - 每行表示一个等式: basic = sum(coefficient * nonbasic) + constant
+  数据结构:
+    - 稀疏矩阵表示，使用双向链表
+    - 行索引到基础变量的映射
+    - 基础变量到行索引的映射
+
+4.2 MatrixEntry<T> (src/theory/arith/linear/matrix.h)
+  用途: 矩阵中的单个条目
+  结构:
+    - RowIndex d_rowIndex: 行索引
+    - ArithVar d_colVar: 列变量
+    - EntryID d_nextRow, d_nextCol: 行和列的下一个条目
+    - EntryID d_prevRow, d_prevCol: 行和列的前一个条目
+    - T d_coefficient: 系数（通常是 Rational）
+
+4.3 Matrix<T> (src/theory/arith/linear/matrix.h)
+  用途: 稀疏矩阵的通用实现
+  结构:
+    - 使用双向链表存储每行和每列
+    - 支持高效的转轴操作
+
+5. 部分模型 (Partial Model)
+--------------------------------------------------------------------------------
+
+5.1 PartialModel 类 (src/theory/arith/linear/partial_model.h)
+  用途: 维护变量的当前赋值和边界
+  核心数据:
+    - ArithVariables d_variables: 变量集合
+    - 每个变量的赋值 (DeltaRational)
+    - 每个变量的下界约束 (ConstraintP)
+    - 每个变量的上界约束 (ConstraintP)
+    - 边界计数信息
+
+5.2 VarInfo (src/theory/arith/linear/partial_model.h)
+  用途: 单个变量的信息
+  结构:
+    - Node d_node: 对应的节点
+    - bool d_auxiliary: 是否为辅助变量
+    - bool d_integer: 是否为整数变量
+    - DeltaRational d_assignment: 当前赋值
+    - ConstraintP d_lowerBoundConstraint: 下界约束
+    - ConstraintP d_upperBoundConstraint: 上界约束
+    - BoundsInfo: 边界信息
+
+5.3 BoundsInfo (src/theory/arith/linear/partial_model.h)
+  用途: 存储变量的边界计数信息
+  包含:
+    - 在边界上的计数
+    - 有边界的计数
+
+6. 约束数据库 (Constraint Database)
+--------------------------------------------------------------------------------
+
+6.1 ConstraintDatabase 类 (src/theory/arith/linear/constraint.h)
+  用途: 管理所有约束
+  核心数据:
+    - std::vector<PerVariableDatabase> d_varDatabases: 每个变量的数据库
+    - 文字到约束的映射
+    - 传播队列
+
+6.2 SortedConstraintMap (src/theory/arith/linear/constraint.h)
+  用途: 按值排序的约束映射
+  结构: 使用有序映射存储约束，键为 DeltaRational 值
+
+7. 错误集 (Error Set)
+--------------------------------------------------------------------------------
+
+7.1 ErrorSet 类 (src/theory/arith/linear/error_set.h)
+  用途: 管理违反边界的变量
+  核心数据:
+    - FocusSet: 优先队列（二进制堆）
+    - DenseMap<ErrorInformation>: 错误信息映射
+  三种模式:
+    - Collection: 被动收集模式
+    - Difference Queue: 基于差值的优先队列
+    - Variable Order Queue: 基于变量顺序的优先队列
+
+7.2 ErrorInformation 类 (src/theory/arith/linear/error_set.h)
+  用途: 存储变量的错误信息
+  结构:
+    - ArithVar d_variable: 错误变量
+    - ConstraintP d_violated: 违反的约束
+    - int d_sgn: 需要移动的方向（>0 下界，<0 上界）
+    - bool d_relaxed: 边界是否已松弛
+    - bool d_inFocus: 是否在焦点集中
+    - FocusSetHandle d_handle: 在堆中的句柄
+    - std::unique_ptr<DeltaRational> d_amount: 与边界的差值
+    - uint32_t d_metric: 度量值
+
+7.3 FocusSet (src/theory/arith/linear/error_set.h)
+  类型: BinaryHeap<ArithVar, ComparatorPivotRule>
+  用途: 优先队列，用于选择下一个要处理的错误变量
+
+8. 边界和转轴相关
+--------------------------------------------------------------------------------
+
+8.1 Border 结构 (src/theory/arith/linear/linear_equality.h)
+  用途: 表示转轴操作中的边界点
+  结构:
+    - ConstraintP d_bound: 边界约束
+    - DeltaRational d_diff: 到达边界的差值
+    - bool d_areFixing: 是否修复约束
+    - const Tableau::Entry* d_entry: 表中的条目
+    - bool d_upperbound: 是否为上界
+
+8.2 BorderHeap 类 (src/theory/arith/linear/linear_equality.h)
+  用途: 边界点的堆结构
+  结构:
+    - BorderVec d_vec: 边界向量
+    - 支持最小堆或最大堆，取决于方向
+
+9. 推理和引理
+--------------------------------------------------------------------------------
+
+9.1 SimpleTheoryLemma (theory/inference_manager.h)
+  用途: 简单的理论引理
+  包含: 引理节点、推理ID、证明生成器
+
+9.2 TrustNode (proof/trust_node.h)
+  用途: 带信任信息的节点
+  用于: 引理、冲突、解释
+
+10. 其他辅助数据结构
+--------------------------------------------------------------------------------
+
+10.1 DenseMap<T> (util/dense_map.h)
+  用途: 密集映射，用于 ArithVar 到值的映射
+  特点: 使用数组实现，访问快速
+
+10.2 DenseSet (util/dense_set.h)
+  用途: 密集集合，用于 ArithVar 集合
+  特点: 使用位向量实现
+
+10.3 ArithVarVec
+  类型: std::vector<ArithVar>
+  用途: 算术变量向量
+
+10.4 ConstraintCPVec
+  类型: std::vector<ConstraintCP>
+  用途: 常量约束指针向量
+
+10.5 RationalVectorCP
+  类型: const std::vector<Rational>*
+  用途: Farkas 系数的向量指针
+
+================================================================================
+第三部分：函数调用关系 (Function Call Relations)
+================================================================================
+
+1. 顶层调用流程
+--------------------------------------------------------------------------------
+
+TheoryArith::postCheck()
+  └─> LinearSolver::postCheck()
+       └─> TheoryArithPrivate::postCheck()
+            ├─> SimplexDecisionProcedure::findModel()
+            │    ├─> (DualSimplex) DualSimplexDecisionProcedure::dualFindModel()
+            │    │    ├─> ErrorSet::isEmpty()
+            │    │    ├─> ErrorSet::hasError()
+            │    │    ├─> DualSimplexDecisionProcedure::searchForFeasibleSolution()
+            │    │    │    ├─> ErrorSet::dequeueInconsistentBasicVariable()
+            │    │    │    ├─> LinearEqualityModule::selectSlackVariable()
+            │    │    │    ├─> LinearEqualityModule::pivotAndUpdate()
+            │    │    │    │    ├─> Tableau::pivot()
+            │    │    │    │    └─> PartialModel::setAssignment()
+            │    │    │    ├─> ErrorSet::update()
+            │    │    │    └─> SimplexDecisionProcedure::reportConflict()
+            │    │    └─> SimplexDecisionProcedure::standardProcessSignals()
+            │    └─> (FCSimplex) FCSimplexDecisionProcedure::findModel()
+            │         ├─> FCSimplexDecisionProcedure::dualLike()
+            │         │    ├─> ErrorSet::dequeueInconsistentBasicVariable()
+            │         │    ├─> FCSimplexDecisionProcedure::dualLikeImproveError()
+            │         │    └─> FCSimplexDecisionProcedure::primalImproveError()
+            │         └─> FCSimplexDecisionProcedure::dualLike()
+            └─> PartialModel::getAssignment()
+         └─> InferenceManager::doPendingLemmas()
+
+2. 约束处理流程
+--------------------------------------------------------------------------------
+
+TheoryArith::preNotifyFact()
+  └─> LinearSolver::preNotifyFact()
+       └─> TheoryArithPrivate::assertFact()
+            ├─> NormalForm::toConstraint()
+            │    └─> 将节点转换为规范形式
+            ├─> ConstraintDatabase::getConstraint()
+            │    ├─> ConstraintDatabase::lookupConstraint()
+            │    └─> ConstraintDatabase::ensureConstraint()
+            │         └─> Constraint::initialize()
+            ├─> Constraint::setAssertedToTheTheory()
+            ├─> PartialModel::setLowerBoundConstraint() / setUpperBoundConstraint()
+            ├─> Constraint::propagate()
+            │    └─> InferenceManager::propagateLit()
+            └─> ErrorSet::signalVariable()
+
+3. 传播流程
+--------------------------------------------------------------------------------
+
+LinearSolver::propagate()
+  └─> TheoryArithPrivate::propagate()
+       └─> ConstraintDatabase::hasMorePropagations()
+            └─> ConstraintDatabase::nextPropagation()
+                 └─> Constraint::propagate()
+                      └─> InferenceManager::propagateLit()
+
+4. 解释流程
+--------------------------------------------------------------------------------
+
+LinearSolver::explain()
+  └─> TheoryArithPrivate::explain()
+       └─> Constraint::externalExplainForPropagation()
+            └─> Constraint::externalExplain()
+                 ├─> Constraint::externalExplainByAssertions()
+                 └─> 构建 Farkas 证明或断言证明
+
+5. 模型收集流程
+--------------------------------------------------------------------------------
+
+LinearSolver::collectModelValues()
+  └─> TheoryArithPrivate::collectModelValues()
+       └─> PartialModel::getAssignment()
+            └─> ArithVariables::asNode()
+                 └─> 返回变量的节点表示
+
+6. Simplex 转轴流程
+--------------------------------------------------------------------------------
+
+LinearEqualityModule::pivotAndUpdate()
+  ├─> Tableau::pivot()
+  │    ├─> Tableau::rowPivot()
+  │    │    ├─> Matrix::removeEntry()
+  │    │    ├─> Matrix::addEntry()
+  │    │    └─> CoefficientChangeCallback::update()
+  │    └─> 更新行索引映射
+  ├─> PartialModel::setAssignment()
+  │    └─> VarInfo::setAssignment()
+  └─> ErrorSet::update()
+       └─> ErrorInformation::updateAmount()
+
+7. 冲突检测流程
+--------------------------------------------------------------------------------
+
+SimplexDecisionProcedure::checkBasicForConflict()
+  ├─> PartialModel::getLowerBound()
+  ├─> PartialModel::getUpperBound()
+  ├─> PartialModel::getAssignment()
+  └─> 比较赋值与边界
+       └─> SimplexDecisionProcedure::generateConflictForBasic()
+            ├─> Constraint::externalExplainConflict()
+            └─> InferenceManager::outputTrustedConflict()
+
+8. 约束规范化流程
+--------------------------------------------------------------------------------
+
+NormalForm::toConstraint()
+  ├─> NormalForm::parseConstraint()
+  │    ├─> 解析比较操作符
+  │    ├─> NormalForm::toSumNode()
+  │    │    └─> 将表达式转换为和的形式
+  │    └─> NormalForm::isolateVariable()
+  │         └─> 隔离变量
+  └─> ConstraintDatabase::getConstraint()
+       └─> 创建或查找约束
+
+9. 错误集更新流程
+--------------------------------------------------------------------------------
+
+ErrorSet::signalVariable()
+  ├─> ErrorSet::addError()
+  │    ├─> ErrorInformation::ErrorInformation()
+  │    └─> FocusSet::push()
+  └─> ErrorSet::update()
+     └─> ErrorInformation::updateAmount()
+          └─> 计算变量与边界的差值
+
+10. 推理生成流程
+--------------------------------------------------------------------------------
+
+InferenceManager::addPendingLemma()
+  ├─> InferenceManager::hasCachedLemma()
+  ├─> InferenceManager::cacheLemma()
+  └─> InferenceManagerBuffered::addPendingLemma()
+
+InferenceManager::doPendingLemmas()
+  └─> InferenceManagerBuffered::doPendingLemmas()
+       └─> OutputChannel::lemma()
+
+11. 预求解流程
+--------------------------------------------------------------------------------
+
+LinearSolver::presolve()
+  └─> TheoryArithPrivate::presolve()
+       ├─> 简化约束
+       ├─> 检测冗余约束
+       └─> 预处理优化
+
+12. 等式求解流程
+--------------------------------------------------------------------------------
+
+EqualitySolver::check()
+  ├─> 处理等式约束
+  └─> 与线性求解器协调
+
+13. 整数处理流程（LIA，但 LRA 中也可能涉及）
+--------------------------------------------------------------------------------
+
+BranchAndBound::branchIntegerVariable()
+  └─> InferenceManager::addPendingLemma()
+       └─> 生成分支引理
+
+14. 证明生成流程
+--------------------------------------------------------------------------------
+
+Constraint::externalExplain()
+  ├─> Constraint::hasFarkasProof()
+  │    └─> Constraint::impliedByFarkas()
+  │         └─> 使用 Farkas 引理生成证明
+  ├─> Constraint::hasEqualityEngineProof()
+  │    └─> 使用等式引擎证明
+  └─> Constraint::externalExplainByAssertions()
+       └─> 从断言构建证明
+
+15. 关键数据流
+--------------------------------------------------------------------------------
+
+输入: TNode (SMT-LIB 节点)
+  └─> NormalForm::toConstraint()
+       └─> ConstraintDatabase::getConstraint()
+            └─> Constraint 对象
+                 ├─> PartialModel (赋值和边界)
+                 ├─> Tableau (等式约束)
+                 └─> ErrorSet (违反的变量)
+
+求解: SimplexDecisionProcedure::findModel()
+  ├─> ErrorSet (选择违反的变量)
+  ├─> LinearEqualityModule::pivotAndUpdate() (转轴)
+  │    ├─> Tableau::pivot() (更新表)
+  │    └─> PartialModel::setAssignment() (更新赋值)
+  └─> 检查冲突或找到模型
+
+输出: PartialModel::getAssignment()
+  └─> 变量的 DeltaRational 赋值
+
+16. 关键依赖关系
+--------------------------------------------------------------------------------
+
+TheoryArith
+  └─> LinearSolver
+       └─> TheoryArithPrivate
+            ├─> ConstraintDatabase
+            │    └─> Constraint
+            ├─> PartialModel
+            │    └─> ArithVariables
+            ├─> Tableau
+            │    └─> Matrix<Rational>
+            ├─> LinearEqualityModule
+            │    ├─> Tableau
+            │    └─> PartialModel
+            ├─> ErrorSet
+            │    └─> ErrorInformation
+            └─> SimplexDecisionProcedure
+                 ├─> DualSimplexDecisionProcedure
+                 └─> FCSimplexDecisionProcedure
+
+17. 回调机制
+--------------------------------------------------------------------------------
+
+CoefficientChangeCallback
+  └─> 在表更新时通知相关组件
+       ├─> ErrorSet::update()
+       └─> 其他需要知道系数变化的组件
+
+BoundUpdateCallback
+  └─> 在边界更新时调用
+       └─> 更新相关数据结构
+
+================================================================================
+算法总结
+================================================================================
+
+CVC5 的 LRA 求解器基于 Simplex for DPLL(T) 算法，主要特点：
+
+1. 使用对偶 Simplex 或 FC Simplex 算法
+2. 维护一个表（Tableau）表示等式约束
+3. 使用部分模型（PartialModel）跟踪变量赋值和边界
+4. 使用错误集（ErrorSet）管理违反边界的变量
+5. 使用约束数据库（ConstraintDatabase）管理所有约束
+6. 支持 DeltaRational 处理严格不等式
+7. 集成到 DPLL(T) 框架中，支持回溯和冲突驱动学习
+
+关键算法步骤：
+1. 规范化输入约束
+2. 构建初始表结构
+3. 检测初始冲突
+4. 迭代 Simplex 过程：
+   a. 选择违反边界的变量
+   b. 选择转轴变量
+   c. 执行转轴操作
+   d. 更新赋值
+   e. 检测冲突
+5. 生成模型或冲突解释
+
+================================================================================
+文件位置索引
+================================================================================
+
+核心文件：
+- src/theory/arith/theory_arith.h/cpp: 理论接口
+- src/theory/arith/linear/linear_solver.h/cpp: 线性求解器包装
+- src/theory/arith/linear/theory_arith_private.h/cpp: 私有实现
+- src/theory/arith/linear/simplex.h/cpp: Simplex 基类
+- src/theory/arith/linear/dual_simplex.h/cpp: 对偶 Simplex
+- src/theory/arith/linear/fc_simplex.h/cpp: FC Simplex
+- src/theory/arith/linear/constraint.h/cpp: 约束定义
+- src/theory/arith/linear/tableau.h/cpp: 表结构
+- src/theory/arith/linear/partial_model.h/cpp: 部分模型
+- src/theory/arith/linear/matrix.h/cpp: 稀疏矩阵
+- src/theory/arith/linear/error_set.h/cpp: 错误集
+- src/theory/arith/linear/linear_equality.h/cpp: 线性等式模块
+- src/theory/arith/linear/normal_form.h/cpp: 规范化
+- src/theory/arith/delta_rational.h/cpp: Delta 有理数
+- src/theory/arith/inference_manager.h/cpp: 推理管理
+
+================================================================================
+结束
+================================================================================
+

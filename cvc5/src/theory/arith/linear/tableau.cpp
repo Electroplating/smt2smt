@@ -37,6 +37,10 @@ void Tableau::pivot(ArithVar oldBasic, ArithVar newBasic, CoefficientChangeCallb
   rowPivot(oldBasic, newBasic, cb);
   Assert(ridx == basicToRowIndex(newBasic));
 
+  // Migrated from OpenSMT: Update variable types after pivot
+  setVarType(oldBasic, VarType::NONBASIC);
+  setVarType(newBasic, VarType::BASIC);
+
   loadRowIntoBuffer(ridx);
 
   ColIterator colIter = colIterator(newBasic);
@@ -115,6 +119,13 @@ void Tableau::addRow(ArithVar basic,
   d_basic2RowIndex.set(basic, newRow);
   d_rowIndex2basic.set(newRow, basic);
 
+  // Migrated from OpenSMT: Set variable type to QUASIBASIC initially
+  // It will be converted to BASIC when bounds are activated
+  ensureTableauReadyFor(basic);
+  if (!isProcessed(basic)) {
+    setVarType(basic, VarType::QUASIBASIC);
+  }
+
 
   if(TraceIsOn("matrix")){ printMatrix(); }
 
@@ -189,6 +200,35 @@ double Tableau::avgRowComplexity() const{
 
 void Tableau::printBasicRow(ArithVar basic, std::ostream& out){
   printRow(basicToRowIndex(basic), out);
+}
+
+// Migrated from OpenSMT: Quasi-Basic variable support
+void Tableau::ensureTableauReadyFor(ArithVar v) {
+  // Ensure VarType map is ready for this variable
+  if (!d_varTypes.isKey(v)) {
+    d_varTypes.set(v, VarType::NONE);
+  }
+}
+
+void Tableau::setVarType(ArithVar v, VarType type) {
+  ensureTableauReadyFor(v);
+  d_varTypes.set(v, type);
+}
+
+void Tableau::quasiToBasic(ArithVar v) {
+  Assert(isQuasiBasic(v));
+  // In CVC5, quasi-basic variables are already in the tableau as basic
+  // We just need to update the type
+  setVarType(v, VarType::BASIC);
+  Assert(isBasic(v));
+}
+
+void Tableau::basicToQuasi(ArithVar v) {
+  Assert(isBasic(v));
+  // Convert basic to quasi-basic
+  // Note: In CVC5, we keep the row but mark it as quasi-basic
+  setVarType(v, VarType::QUASIBASIC);
+  Assert(isQuasiBasic(v));
 }
 
 }  // namespace arith

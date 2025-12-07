@@ -125,6 +125,8 @@ Result::Status FCSimplexDecisionProcedure::findModel(bool exactResult)
   if (result == Result::UNKNOWN && d_errorSet.errorEmpty())
   {
     result = Result::SAT;
+    // Migrated from OpenSMT: Save assignment when SAT is found
+    d_variables.saveAssignment();
   }
 
   // ensure that the conflict variable is still in the queue.

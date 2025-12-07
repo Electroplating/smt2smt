@@ -1371,6 +1371,21 @@ void LinearEqualityModule::directlyAddToCoefficient(ArithVar row, ArithVar col, 
   d_tableau.directlyAddToCoefficient(row, col, mult, d_trackCallback);
 }
 
+// Migrated from OpenSMT: Convert quasi-basic variable to basic
+void LinearEqualityModule::quasiToBasic(ArithVar v) {
+  if(d_tableau.isQuasiBasic(v)) {
+    // Convert quasi-basic to basic in the tableau
+    d_tableau.quasiToBasic(v);
+    // The variable now has an active bound, so it should be treated as basic
+    // Update column information if needed
+    RowIndex ridx = d_tableau.basicToRowIndex(v);
+    // Ensure the row is tracked if we're tracking bounds
+    if(d_areTracking && !d_btracking.isKey(ridx)) {
+      trackRowIndex(ridx);
+    }
+  }
+}
+
 }  // namespace arith
 }  // namespace theory
 }  // namespace cvc5::internal

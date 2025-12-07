@@ -1,0 +1,690 @@
+================================================================================
+OpenSMT 到 CVC5 代码迁移计划
+================================================================================
+生成时间: 2025
+目的: 将 OpenSMT LRA 求解器的关键优化和有效算法迁移到 CVC5
+范围: 线性实数算术 (LRA) 求解器核心算法和数据结构
+
+================================================================================
+第一部分: 关键组件对应关系映射
+================================================================================
+
+1. 核心求解器类对应关系
+--------------------------------------------------------------------------------
+
+OpenSMT                          CVC5                             迁移优先级
+─────────────────────────────────────────────────────────────────────────────
+LASolver                         TheoryArithPrivate                适配层
+  ├─ check()                     └─ postCheck()                    ★★★
+  ├─ assertLit()                 └─ assertFact()                   已存在
+  └─ addBound()                  └─ ConstraintDatabase::getConstraint() 已存在
+
+Simplex                          SimplexDecisionProcedure         核心算法
+  ├─ checkSimplex()              └─ findModel()                    ★★★★★
+  ├─ assertBound()               └─ [需集成到约束处理流程]          ★★★★
+  ├─ pivot()                     └─ LinearEqualityModule::pivotAndUpdate() ★★★
+  └─ updateValues()               └─ PartialModel::setAssignment() 已存在
+
+2. 数据结构对应关系
+--------------------------------------------------------------------------------
+
+OpenSMT                          CVC5                             迁移状态
+─────────────────────────────────────────────────────────────────────────────
+Delta                            DeltaRational                     已存在(概念相同)
+  - Real r, Real d               - Rational c, Rational k         无需迁移
+
+LVRef                            ArithVar                         已存在(概念相同)
+  - struct { uint32_t x; }       - typedef uint32_t                无需迁移
+
+LABoundRef                       ConstraintP                       CVC5更完善
+  - struct { uint32_t x; }       - Constraint*                     无需迁移
+
+LRAModel                         PartialModel                      需增强
+  - 边界栈管理                    - 边界约束管理                     ★★★★
+  - 增量赋值更新                  - 赋值管理                        ★★★★★
+  - saveAssignment()             - commitAssignmentChanges()      需迁移
+  - restoreAssignment()          - revertAssignmentChanges()       需迁移
+
+LABoundStore                     ConstraintDatabase                概念不同
+  - 边界对管理                    - 约束管理                        需适配
+
+Tableau                          Tableau                           需增强
+  - Polynomial 行表示            - Matrix 稀疏矩阵                 需迁移
+  - QUASIBASIC 类型              - 无对应                           ★★★★★
+  - normalizeRow()               - 无显式规范化                    需迁移
+
+Simplex::candidates               ErrorSet                          需增强
+  - std::set<LVRef>              - FocusSet (优先队列)             需迁移
+  - 最短多项式启发式             - 无对应                           ★★★★★
+
+3. 关键算法对应关系
+--------------------------------------------------------------------------------
+
+OpenSMT                          CVC5                             迁移优先级
+─────────────────────────────────────────────────────────────────────────────
+Simplex::checkSimplex()          DualSimplex::dualFindModel()       核心算法
+  - Bland规则                    - 无显式Bland规则                   ★★★
+  - 最短多项式启发式             - ErrorSet优先队列                  ★★★★★
+  - 主循环模式                   - searchForFeasibleSolution()       已存在
+
+Simplex::getBasicVarToFixByShortestPoly()  ErrorSet::dequeueInconsistentBasicVariable()
+  - 最短多项式启发式             - 基于差值的优先队列                ★★★★★
+  - 减少旋转计算量               - 无对应优化                        需迁移
+
+Simplex::findNonBasicForPivotByHeuristic() LinearEqualityModule::selectSlackVariable()
+  - 更独立变量优先               - 边界选择                          ★★★
+  - 启发式选择                   - 边界堆选择                       需增强
+
+Simplex::quasiToBasic()          [无对应]                           ★★★★★
+  - Quasi-basic转换              - 需实现                           需迁移
+
+LRAModel::saveAssignment()       PartialModel::commitAssignmentChanges() 需迁移
+  - 增量保存                     - 无增量机制                         ★★★★★
+  - changed_vars跟踪             - 无对应                            需迁移
+
+================================================================================
+第二部分: 需要迁移的关键优化和算法
+================================================================================
+
+1. 最短多项式启发式 (Shortest Polynomial Heuristic) - 最高优先级
+--------------------------------------------------------------------------------
+OpenSMT位置: opensmt/src/tsolvers/lasolver/Simplex.cc
+  - Simplex::getBasicVarToFixByShortestPoly()
+  - 选择具有最小多项式大小的违反边界的基本变量
+
+CVC5对应位置: src/theory/arith/linear/error_set.h/cpp
+  - ErrorSet::dequeueInconsistentBasicVariable()
+  - 当前使用基于差值的优先队列
+
+迁移方案:
+  - 在 ErrorSet 中添加多项式大小度量
+  - 修改 ComparatorPivotRule 以支持最短多项式启发式
+  - 在 Tableau 中添加 rowComplexity() 方法（已存在，需利用）
+  - 创建新的启发式模式: SHORTEST_POLY_MODE
+
+对应函数映射:
+  OpenSMT::Simplex::getBasicVarToFixByShortestPoly()
+    → CVC5::ErrorSet::dequeueInconsistentBasicVariable() [增强]
+    → CVC5::Tableau::rowComplexity() [利用现有]
+
+2. Quasi-Basic 变量机制 - 最高优先级
+--------------------------------------------------------------------------------
+OpenSMT位置: opensmt/src/tsolvers/lasolver/Simplex.h, Simplex.cc
+  - Simplex::quasiToBasic(LVRef v)
+  - Tableau::VarType::QUASIBASIC
+  - 延迟激活边界，直到需要时才转换为basic
+
+CVC5对应位置: src/theory/arith/linear/tableau.h/cpp
+  - 当前只有 BASIC 和 NONBASIC 类型
+
+迁移方案:
+  - 在 Tableau 中添加 QUASIBASIC 变量类型
+  - 实现 quasiToBasic() 转换逻辑
+  - 修改边界激活流程以支持延迟激活
+  - 在 LinearEqualityModule 中集成
+
+对应函数映射:
+  OpenSMT::Simplex::quasiToBasic(LVRef v)
+    → CVC5::LinearEqualityModule::quasiToBasic(ArithVar v) [新建]
+  OpenSMT::Tableau::VarType::QUASIBASIC
+    → CVC5::Tableau::VarType::QUASIBASIC [扩展枚举]
+
+3. 增量赋值更新机制 - 高优先级
+--------------------------------------------------------------------------------
+OpenSMT位置: opensmt/src/tsolvers/lasolver/LRAModel.h, LRAModel.cc
+  - LRAModel::saveAssignment()
+  - LRAModel::restoreAssignment()
+  - changed_vars_set, changed_vars_vec
+  - 只跟踪更改的变量，提高效率
+
+CVC5对应位置: src/theory/arith/linear/partial_model.h/cpp
+  - PartialModel::commitAssignmentChanges()
+  - PartialModel::revertAssignmentChanges()
+  - 当前无增量跟踪机制
+
+迁移方案:
+  - 在 PartialModel 中添加 changed_vars 跟踪
+  - 修改 setAssignment() 以标记更改的变量
+  - 实现增量保存和恢复机制
+  - 优化模型一致性检查
+
+对应函数映射:
+  OpenSMT::LRAModel::saveAssignment()
+    → CVC5::PartialModel::saveAssignment() [新建]
+  OpenSMT::LRAModel::restoreAssignment()
+    → CVC5::PartialModel::restoreAssignment() [新建]
+  OpenSMT::LRAModel::write() [标记更改]
+    → CVC5::PartialModel::setAssignment() [增强]
+
+4. 边界激活缓冲区 - 中优先级
+--------------------------------------------------------------------------------
+OpenSMT位置: opensmt/src/tsolvers/lasolver/Simplex.h, Simplex.cc
+  - Simplex::bufferOfActivatedBounds
+  - Simplex::processBufferOfActivatedBounds()
+  - 批量处理边界激活，减少检查次数
+
+CVC5对应位置: src/theory/arith/linear/theory_arith_private.h/cpp
+  - 当前在 assertFact() 中立即处理
+
+迁移方案:
+  - 在 TheoryArithPrivate 或 LinearSolver 中添加边界缓冲区
+  - 实现批量处理机制
+  - 在 postCheck() 中处理缓冲区
+
+对应函数映射:
+  OpenSMT::Simplex::processBufferOfActivatedBounds()
+    → CVC5::TheoryArithPrivate::processBufferedBounds() [新建]
+
+5. 改进的旋转选择启发式 - 中优先级
+--------------------------------------------------------------------------------
+OpenSMT位置: opensmt/src/tsolvers/lasolver/Simplex.cc
+  - Simplex::findNonBasicForPivotByHeuristic()
+  - 优先选择出现在更少行中的非基本变量（更独立的变量）
+
+CVC5对应位置: src/theory/arith/linear/linear_equality.h/cpp
+  - LinearEqualityModule::selectSlackVariable()
+  - 当前基于边界堆选择
+
+迁移方案:
+  - 在 LinearEqualityModule 中添加行计数信息
+  - 实现基于行数的启发式选择
+  - 与现有边界堆方法结合
+
+对应函数映射:
+  OpenSMT::Simplex::findNonBasicForPivotByHeuristic()
+    → CVC5::LinearEqualityModule::selectSlackVariableByHeuristic() [新建]
+
+6. Bland 规则集成 - 中优先级
+--------------------------------------------------------------------------------
+OpenSMT位置: opensmt/src/tsolvers/lasolver/Simplex.cc
+  - Simplex::getBasicVarToFixByBland()
+  - Simplex::findNonBasicForPivotByBland()
+  - 当检测到循环时切换到Bland规则
+
+CVC5对应位置: src/theory/arith/linear/dual_simplex.h/cpp
+  - 当前无显式Bland规则实现
+
+迁移方案:
+  - 在 SimplexDecisionProcedure 中添加循环检测
+  - 实现Bland规则作为后备选择策略
+  - 在 ErrorSet 中添加变量ID排序模式
+
+对应函数映射:
+  OpenSMT::Simplex::getBasicVarToFixByBland()
+    → CVC5::ErrorSet::dequeueByBlandRule() [新建]
+  OpenSMT::Simplex::findNonBasicForPivotByBland()
+    → CVC5::LinearEqualityModule::selectSlackVariableByBland() [新建]
+
+7. 多项式规范化 - 低优先级
+--------------------------------------------------------------------------------
+OpenSMT位置: opensmt/src/tsolvers/lasolver/Tableau.cc
+  - Tableau::normalizeRow(LVRef row)
+  - 确保基本变量的系数为1
+
+CVC5对应位置: src/theory/arith/linear/tableau.h/cpp
+  - 当前在 pivot() 中隐式处理
+
+迁移方案:
+  - 添加显式的行规范化方法
+  - 在添加新行时调用规范化
+  - 提高数值稳定性
+
+对应函数映射:
+  OpenSMT::Tableau::normalizeRow()
+    → CVC5::Tableau::normalizeRow() [新建]
+
+================================================================================
+第三部分: 详细迁移计划
+================================================================================
+
+阶段1: 基础设施准备 (1-2周)
+─────────────────────────────────────────────────────────────────────────────
+目标: 建立迁移基础，添加必要的接口和数据结构
+
+任务1.1: 扩展 Tableau 以支持 Quasi-Basic 变量
+  - 文件: src/theory/arith/linear/tableau.h/cpp
+  - 操作:
+    * 添加 VarType::QUASIBASIC 枚举值
+    * 添加 isQuasiBasic(ArithVar v) 方法
+    * 修改变量类型管理逻辑
+  - 依赖: 无
+  - 优先级: ★★★★★
+
+任务1.2: 在 PartialModel 中添加增量跟踪
+  - 文件: src/theory/arith/linear/partial_model.h/cpp
+  - 操作:
+    * 添加 DenseSet d_changedVars
+    * 添加 ArithVarVec d_changedVarsVec
+    * 修改 setAssignment() 以标记更改
+  - 依赖: 无
+  - 优先级: ★★★★★
+
+任务1.3: 在 ErrorSet 中添加启发式模式
+  - 文件: src/theory/arith/linear/error_set.h/cpp
+  - 操作:
+    * 添加 HeuristicMode 枚举
+    * 修改 ComparatorPivotRule 以支持多种模式
+    * 添加模式切换接口
+  - 依赖: 无
+  - 优先级: ★★★★★
+
+阶段2: 核心算法迁移 (2-3周)
+─────────────────────────────────────────────────────────────────────────────
+目标: 迁移关键的 Simplex 算法优化
+
+任务2.1: 实现最短多项式启发式
+  - 文件: src/theory/arith/linear/error_set.h/cpp, tableau.h/cpp
+  - 操作:
+    * 在 Tableau 中确保 rowComplexity() 可用
+    * 在 ErrorSet 中实现最短多项式比较器
+    * 添加 SHORTEST_POLY_MODE 模式
+    * 修改 dequeueInconsistentBasicVariable() 以支持新模式
+  - 依赖: 任务1.3
+  - 参考: opensmt/src/tsolvers/lasolver/Simplex.cc::getBasicVarToFixByShortestPoly()
+  - 优先级: ★★★★★
+
+任务2.2: 实现 Quasi-Basic 变量机制
+  - 文件: src/theory/arith/linear/linear_equality.h/cpp, tableau.h/cpp
+  - 操作:
+    * 实现 quasiToBasic(ArithVar v) 方法
+    * 修改边界激活流程以支持延迟转换
+    * 在 assertFact() 中集成
+  - 依赖: 任务1.1
+  - 参考: opensmt/src/tsolvers/lasolver/Simplex.cc::quasiToBasic()
+  - 优先级: ★★★★★
+
+任务2.3: 实现增量赋值保存和恢复
+  - 文件: src/theory/arith/linear/partial_model.h/cpp
+  - 操作:
+    * 实现 saveAssignment() 方法
+    * 实现 restoreAssignment() 方法
+    * 添加 last_consistent_assignment 存储
+    * 在 Simplex 流程中集成
+  - 依赖: 任务1.2
+  - 参考: opensmt/src/tsolvers/lasolver/LRAModel.cc::saveAssignment()
+  - 优先级: ★★★★★
+
+阶段3: 优化和增强 (1-2周)
+─────────────────────────────────────────────────────────────────────────────
+目标: 迁移辅助优化和启发式
+
+任务3.1: 实现边界激活缓冲区
+  - 文件: src/theory/arith/linear/theory_arith_private.h/cpp
+  - 操作:
+    * 添加边界缓冲区数据结构
+    * 实现 processBufferedBounds() 方法
+    * 在 assertFact() 中延迟处理
+    * 在 postCheck() 中批量处理
+  - 依赖: 任务2.2
+  - 参考: opensmt/src/tsolvers/lasolver/Simplex.cc::processBufferOfActivatedBounds()
+  - 优先级: ★★★
+
+任务3.2: 实现改进的旋转选择启发式
+  - 文件: src/theory/arith/linear/linear_equality.h/cpp, tableau.h/cpp
+  - 操作:
+    * 在 Tableau 中添加行计数跟踪
+    * 实现 selectSlackVariableByHeuristic() 方法
+    * 优先选择出现在更少行中的变量
+  - 依赖: 无
+  - 参考: opensmt/src/tsolvers/lasolver/Simplex.cc::findNonBasicForPivotByHeuristic()
+  - 优先级: ★★★
+
+任务3.3: 实现 Bland 规则
+  - 文件: src/theory/arith/linear/error_set.h/cpp, linear_equality.h/cpp
+  - 操作:
+    * 在 ErrorSet 中添加 Bland 模式
+    * 实现 dequeueByBlandRule() 方法
+    * 在 LinearEqualityModule 中实现 selectSlackVariableByBland()
+    * 添加循环检测机制
+  - 依赖: 任务1.3
+  - 参考: opensmt/src/tsolvers/lasolver/Simplex.cc::getBasicVarToFixByBland()
+  - 优先级: ★★★
+
+任务3.4: 实现行规范化
+  - 文件: src/theory/arith/linear/tableau.h/cpp
+  - 操作:
+    * 实现 normalizeRow(RowIndex rid) 方法
+    * 在 addRow() 中调用规范化
+    * 提高数值稳定性
+  - 依赖: 无
+  - 参考: opensmt/src/tsolvers/lasolver/Tableau.cc::normalizeRow()
+  - 优先级: ★★
+
+阶段4: 集成和测试 (1-2周)
+─────────────────────────────────────────────────────────────────────────────
+目标: 集成所有迁移的代码，进行全面测试
+
+任务4.1: 集成到 Simplex 流程
+  - 文件: src/theory/arith/linear/dual_simplex.h/cpp, fc_simplex.h/cpp
+  - 操作:
+    * 在 findModel() 中集成新的启发式
+    * 添加启发式模式选择逻辑
+    * 确保与现有代码兼容
+  - 依赖: 任务2.1, 2.2, 2.3
+  - 优先级: ★★★★★
+
+任务4.2: 性能测试和调优
+  - 操作:
+    * 使用标准 LRA 基准测试
+    * 比较迁移前后的性能
+    * 调优启发式参数
+  - 依赖: 任务4.1
+  - 优先级: ★★★★
+
+任务4.3: 正确性验证
+  - 操作:
+    * 运行回归测试套件
+    * 验证 SAT/UNSAT 结果一致性
+    * 检查模型正确性
+  - 依赖: 任务4.1
+  - 优先级: ★★★★★
+
+================================================================================
+第四部分: 函数详细对应表
+================================================================================
+
+1. Simplex 核心算法函数
+─────────────────────────────────────────────────────────────────────────────
+
+OpenSMT 函数                                    CVC5 对应/目标位置              状态
+─────────────────────────────────────────────────────────────────────────────
+Simplex::checkSimplex()                         DualSimplex::dualFindModel()    需增强
+  - 主循环逻辑                                  - searchForFeasibleSolution()     已存在
+  - Bland规则切换                               - 需添加                        需迁移
+  - 最短多项式启发式                            - ErrorSet模式                   需迁移
+
+Simplex::assertBound(LABoundRef)                TheoryArithPrivate::assertFact() 需增强
+  - 边界激活                                    - Constraint::setAssertedToTheTheory() 已存在
+  - Quasi-basic转换                             - 需添加                        需迁移
+  - 候选集合更新                                - ErrorSet::signalVariable()     已存在
+
+Simplex::pivot(LVRef, LVRef)                    LinearEqualityModule::pivotAndUpdate() 需增强
+  - Tableau更新                                 - Tableau::pivot()               已存在
+  - 值更新                                      - PartialModel::setAssignment() 已存在
+  - 候选集合更新                                - ErrorSet::update()             已存在
+
+Simplex::updateValues(LVRef, LVRef)             LinearEqualityModule::pivotAndUpdate() 已集成
+  - 重新计算基本变量值                          - 在pivotAndUpdate()中           已存在
+  - 检查边界违反                                - ErrorSet::update()             已存在
+
+Simplex::getBasicVarToFixByShortestPoly()       ErrorSet::dequeueInconsistentBasicVariable() 需迁移
+  - 最短多项式启发式                            - 需添加                        需迁移
+
+Simplex::getBasicVarToFixByBland()              ErrorSet::dequeueByBlandRule()  需新建
+  - Bland规则选择                               - 需添加                        需迁移
+
+Simplex::findNonBasicForPivotByHeuristic()     LinearEqualityModule::selectSlackVariable() 需增强
+  - 更独立变量优先                              - 需添加                        需迁移
+
+Simplex::findNonBasicForPivotByBland()          LinearEqualityModule::selectSlackVariableByBland() 需新建
+  - Bland规则选择                               - 需添加                        需迁移
+
+Simplex::quasiToBasic(LVRef)                    LinearEqualityModule::quasiToBasic() 需新建
+  - Quasi-basic转换                             - 需添加                        需迁移
+
+2. 模型管理函数
+─────────────────────────────────────────────────────────────────────────────
+
+OpenSMT 函数                                    CVC5 对应/目标位置              状态
+─────────────────────────────────────────────────────────────────────────────
+LRAModel::write(LVRef, Delta)                   PartialModel::setAssignment()    需增强
+  - 赋值写入                                    - 已存在                        需增强
+  - 更改标记                                    - 需添加                        需迁移
+
+LRAModel::read(LVRef)                           PartialModel::getAssignment()    已存在
+  - 赋值读取                                    - 已存在                        无需迁移
+
+LRAModel::pushBound(LABoundRef)                 PartialModel::setLowerBoundConstraint() 需增强
+  - 边界栈管理                                  - 需添加栈机制                   需迁移
+  - 边界激活                                    - 已存在                        需增强
+
+LRAModel::saveAssignment()                      PartialModel::saveAssignment()  需新建
+  - 增量保存                                    - 需添加                        需迁移
+
+LRAModel::restoreAssignment()                  PartialModel::restoreAssignment() 需新建
+  - 增量恢复                                    - 需添加                        需迁移
+
+LRAModel::pushBacktrackPoint()                  [在Theory层处理]                已存在
+  - 回溯点创建                                  - Theory层处理                   无需迁移
+
+LRAModel::popBacktrackPoint()                   [在Theory层处理]                已存在
+  - 回溯点恢复                                  - Theory层处理                   无需迁移
+
+3. Tableau 管理函数
+─────────────────────────────────────────────────────────────────────────────
+
+OpenSMT 函数                                    CVC5 对应/目标位置              状态
+─────────────────────────────────────────────────────────────────────────────
+Tableau::newRow(LVRef, Polynomial)              Tableau::addRow()               需增强
+  - 添加基本变量行                              - 已存在                        需增强
+  - Quasi-basic标记                             - 需添加                        需迁移
+  - 行规范化                                    - 需添加                        需迁移
+
+Tableau::newNonbasicVar(LVRef)                  Tableau::[隐式处理]              已存在
+  - 标记非基本变量                              - 在addRow()中处理               无需迁移
+
+Tableau::pivot(LVRef, LVRef)                    Tableau::pivot()                已存在
+  - 表旋转操作                                  - 已存在                        需增强
+  - 列索引更新                                  - 已存在                        无需迁移
+
+Tableau::normalizeRow(LVRef)                    Tableau::normalizeRow()          需新建
+  - 行规范化                                    - 需添加                        需迁移
+
+Tableau::getRowPoly(LVRef)                      Tableau::getRowPoly()           需检查
+  - 获取行多项式                                - 需确认存在                    需验证
+
+Tableau::getColumn(LVRef)                       Matrix::getColumn()             需检查
+  - 获取列信息                                  - 需确认存在                    需验证
+
+4. 边界管理函数
+─────────────────────────────────────────────────────────────────────────────
+
+OpenSMT 函数                                    CVC5 对应/目标位置              状态
+─────────────────────────────────────────────────────────────────────────────
+LABoundStore::allocBoundPair()                  ConstraintDatabase::ensureConstraint() 需适配
+  - 边界对分配                                  - 约束创建                      已存在
+  - 概念不同，需适配                            - 需适配逻辑                    需迁移
+
+LABoundStore::getBounds(LVRef)                  ConstraintDatabase::getConstraints() 需适配
+  - 获取变量边界                                - 获取约束                      已存在
+
+Simplex::processBufferOfActivatedBounds()       TheoryArithPrivate::processBufferedBounds() 需新建
+  - 批量处理边界                                - 需添加                        需迁移
+
+5. 候选集合管理函数
+─────────────────────────────────────────────────────────────────────────────
+
+OpenSMT 函数                                    CVC5 对应/目标位置              状态
+─────────────────────────────────────────────────────────────────────────────
+Simplex::newCandidate(LVRef)                    ErrorSet::signalVariable()       已存在
+  - 添加候选变量                                - 已存在                        无需迁移
+
+Simplex::eraseCandidate(LVRef)                  ErrorSet::removeError()         需检查
+  - 移除候选变量                                - 需确认存在                    需验证
+
+Simplex::isModelOutOfBounds(LVRef)              ErrorSet::hasError()             已存在
+  - 检查边界违反                                - 已存在                        无需迁移
+
+================================================================================
+第五部分: 数据结构详细对应表
+================================================================================
+
+1. 核心引用类型
+─────────────────────────────────────────────────────────────────────────────
+
+OpenSMT 类型                                    CVC5 对应类型                    状态
+─────────────────────────────────────────────────────────────────────────────
+LVRef { uint32_t x; }                          ArithVar (uint32_t)              已存在
+  - 线性变量引用                                - 算术变量                       无需迁移
+
+LABoundRef { uint32_t x; }                     ConstraintP (Constraint*)        概念不同
+  - 边界引用                                    - 约束指针                      需适配
+
+BoundT { char t; }                             ConstraintType (enum)            已存在
+  - bound_l, bound_u                            - LowerBound, UpperBound         无需迁移
+
+2. 数值类型
+─────────────────────────────────────────────────────────────────────────────
+
+OpenSMT 类型                                    CVC5 对应类型                    状态
+─────────────────────────────────────────────────────────────────────────────
+Delta { Real r, Real d }                       DeltaRational { Rational c, Rational k } 已存在
+  - 带严格性的实数                              - 带无穷小的有理数               概念相同
+  - r: 主值, d: 严格性增量                      - c: 主值, k: 无穷小系数         无需迁移
+
+Real                                            Rational                         已存在
+  - 有理数                                      - 有理数                         无需迁移
+
+3. 模型数据结构
+─────────────────────────────────────────────────────────────────────────────
+
+OpenSMT 数据结构                                CVC5 对应结构                   状态
+─────────────────────────────────────────────────────────────────────────────
+LRAModel::current_assignment                    PartialModel::d_assignment       已存在
+  - std::vector<Delta>                          - DenseMap<DeltaRational>        需增强
+
+LRAModel::last_consistent_assignment           [需添加]                         需新建
+  - std::vector<Delta>                          - DenseMap<DeltaRational>        需迁移
+
+LRAModel::changed_vars_set                      [需添加]                         需新建
+  - nat_set                                     - DenseSet                       需迁移
+
+LRAModel::changed_vars_vec                      [需添加]                         需新建
+  - vec<LVRef>                                  - ArithVarVec                    需迁移
+
+LRAModel::int_lbounds                           PartialModel::d_lowerBoundConstraint 需增强
+  - std::vector<vec<LABoundRef>>                - DenseMap<ConstraintP>          需增强为栈
+
+LRAModel::int_ubounds                           PartialModel::d_upperBoundConstraint 需增强
+  - std::vector<vec<LABoundRef>>                - DenseMap<ConstraintP>          需增强为栈
+
+4. Tableau 数据结构
+─────────────────────────────────────────────────────────────────────────────
+
+OpenSMT 数据结构                                CVC5 对应结构                   状态
+─────────────────────────────────────────────────────────────────────────────
+Tableau::rows                                   Tableau::d_matrix                已存在
+  - rows_t (Polynomial向量)                    - Matrix<Rational>               需增强
+
+Tableau::cols                                   Tableau::d_matrix                已存在
+  - std::vector<column_t>                       - Matrix<Rational>               已存在
+
+Tableau::varTypes                               [需添加]                         需新建
+  - std::vector<VarType>                        - DenseMap<VarType>               需迁移
+  - NONE, BASIC, NONBASIC, QUASIBASIC           - 需添加QUASIBASIC               需迁移
+
+5. Simplex 状态数据结构
+─────────────────────────────────────────────────────────────────────────────
+
+OpenSMT 数据结构                                CVC5 对应结构                   状态
+─────────────────────────────────────────────────────────────────────────────
+Simplex::candidates                             ErrorSet::d_focus               已存在
+  - std::set<LVRef, LVRefComp>                 - FocusSet (BinaryHeap)          需增强
+
+Simplex::bufferOfActivatedBounds                 [需添加]                         需新建
+  - std::vector<std::pair<LVRef, LABoundRef>>   - std::vector<BoundActivation>  需迁移
+
+Simplex::boundsActivated                        [可能需添加]                     需评估
+  - std::vector<unsigned int>                   - DenseMap<unsigned int>        需评估
+
+6. 边界存储数据结构
+─────────────────────────────────────────────────────────────────────────────
+
+OpenSMT 数据结构                                CVC5 对应结构                   状态
+─────────────────────────────────────────────────────────────────────────────
+LABoundStore::bounds                            ConstraintDatabase::d_varDatabases 需适配
+  - std::vector<vec<LABoundRef>>                - std::vector<PerVariableDatabase> 概念不同
+
+LABoundStore::ba                                [Constraint分配器]                已存在
+  - LABoundAllocator                            - 在ConstraintDatabase中         无需迁移
+
+================================================================================
+第六部分: 迁移注意事项和风险
+================================================================================
+
+1. 架构差异
+─────────────────────────────────────────────────────────────────────────────
+- OpenSMT 使用 PTRef 作为顶层引用，CVC5 使用 TNode/Node
+- OpenSMT 的边界管理更细粒度（LABound vs Constraint）
+- CVC5 的约束系统更完善，但需要适配 OpenSMT 的优化
+
+2. 集成点
+─────────────────────────────────────────────────────────────────────────────
+- 所有迁移的代码需要集成到 CVC5 的 DPLL(T) 框架
+- 需要与 InferenceManager 协调以生成正确的解释
+- 需要与 EqualityEngine 协调以处理等式
+
+3. 测试策略
+─────────────────────────────────────────────────────────────────────────────
+- 使用 CVC5 现有的测试套件
+- 添加针对新功能的单元测试
+- 性能基准测试以验证优化效果
+- 正确性回归测试
+
+4. 潜在风险
+─────────────────────────────────────────────────────────────────────────────
+- 性能回归：新启发式可能在某些情况下变慢
+- 正确性问题：需要仔细验证所有边界情况
+- 兼容性：需要确保与现有 CVC5 功能兼容
+
+5. 回退策略
+─────────────────────────────────────────────────────────────────────────────
+- 为所有新功能添加配置选项
+- 保持原有代码路径可用
+- 使用特性标志控制新功能
+
+================================================================================
+第七部分: 优先级总结
+================================================================================
+
+最高优先级 (★★★★★) - 必须迁移，核心优化
+─────────────────────────────────────────────────────────────────────────────
+1. 最短多项式启发式 (任务2.1)
+2. Quasi-Basic 变量机制 (任务2.2)
+3. 增量赋值更新机制 (任务2.3)
+4. 集成到 Simplex 流程 (任务4.1)
+5. 正确性验证 (任务4.3)
+
+高优先级 (★★★★) - 重要优化
+─────────────────────────────────────────────────────────────────────────────
+1. 性能测试和调优 (任务4.2)
+2. 扩展 Tableau 支持 Quasi-Basic (任务1.1)
+3. 在 PartialModel 中添加增量跟踪 (任务1.2)
+4. 在 ErrorSet 中添加启发式模式 (任务1.3)
+
+中优先级 (★★★) - 有价值的优化
+─────────────────────────────────────────────────────────────────────────────
+1. 边界激活缓冲区 (任务3.1)
+2. 改进的旋转选择启发式 (任务3.2)
+3. Bland 规则集成 (任务3.3)
+
+低优先级 (★★) - 可选优化
+─────────────────────────────────────────────────────────────────────────────
+1. 行规范化 (任务3.4)
+
+================================================================================
+第八部分: 预期收益
+================================================================================
+
+1. 性能提升
+─────────────────────────────────────────────────────────────────────────────
+- 最短多项式启发式：减少 10-30% 的旋转操作
+- Quasi-Basic 机制：减少不必要的边界激活检查
+- 增量赋值更新：减少 20-40% 的赋值复制开销
+
+2. 代码质量
+─────────────────────────────────────────────────────────────────────────────
+- 更清晰的算法结构
+- 更好的可维护性
+- 更完善的测试覆盖
+
+3. 功能完整性
+─────────────────────────────────────────────────────────────────────────────
+- 支持更多优化策略
+- 更好的循环避免机制
+- 更高效的模型管理
+
+================================================================================
+结束
+================================================================================
+

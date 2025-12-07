@@ -1,0 +1,9 @@
+Please analyze the code in the opensmt solver@opensmt .
+Specify the algorithms and data structures used in solving LRA problems, generate a @opensmt_algorithm.log including three parts: critical functions, data structures and function call relations.
+The file should be as detailed as possible for future code migration work.
+
+Analyze the critical and effective parts in opensmt@opensmt comparing cvc5@cvc5 .
+I now need to transfer these parts from opensmt to cvc5, please generate @opensmt_to_cvc5.log including the corresponding functions and data structures in opensmt@opensmt_algorithm.log and cvc5@cvc5_algorithm.log , and a plan for future code migration.
+
+Do code migration on the LRA solving theory from opensmt@opensmt to cvc5@cvc5 based on @opensmt_to_cvc5.log .
+Keep a code migration log@code_migration_1.log of the migration details for future debugging.
