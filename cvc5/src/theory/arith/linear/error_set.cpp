@@ -192,6 +192,10 @@ void ErrorSet::recomputeAmount(ErrorInformation& ei,
     case options::ErrorSelectionRule::SUM_METRIC:
       ei.setMetric(sumMetric(ei.getVariable()));
       break;
+    case options::ErrorSelectionRule::SHORTEST_POLY:
+      // Migrated from OpenSMT: Use row complexity as metric
+      ei.setMetric(getRowComplexity(ei.getVariable()));
+      break;
     case options::ErrorSelectionRule::VAR_ORDER:
       // do nothing
       break;

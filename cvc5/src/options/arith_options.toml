@@ -88,6 +88,10 @@ name   = "Arithmetic Theory"
   help = "The maximum violation the bound."
 [[option.mode.SUM_METRIC]]
   name = "sum"
+  help = "The sum metric."
+[[option.mode.SHORTEST_POLY]]
+  name = "shortest-poly"
+  help = "Selects the variable with the smallest row complexity (shortest polynomial heuristic)."
 
 # The number of pivots before simplex rechecks every basic variable for a conflict
 [[option]]

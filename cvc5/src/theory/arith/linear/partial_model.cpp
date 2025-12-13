@@ -341,7 +341,7 @@ void ArithVariables::setAssignment(ArithVar x, const DeltaRational& r){
   }
   
   // Migrated from OpenSMT: Track changed variables for incremental save/restore
-  if(!d_changedVars.isKey(x)){
+  if(!d_changedVars.isMember(x)){
     d_changedVars.add(x);
     d_changedVarsVec.push_back(x);
   }
@@ -366,7 +366,7 @@ void ArithVariables::setAssignment(ArithVar x, const DeltaRational& safe, const 
   }
 
   // Migrated from OpenSMT: Track changed variables for incremental save/restore
-  if(!d_changedVars.isKey(x)){
+  if(!d_changedVars.isMember(x)){
     d_changedVars.add(x);
     d_changedVarsVec.push_back(x);
   }
@@ -711,7 +711,7 @@ void ArithVariables::saveAssignment() {
     if(!d_lastConsistentAssignment.isKey(v)) {
       d_lastConsistentAssignment.set(v, d_vars[v].d_assignment);
     } else {
-      d_lastConsistentAssignment[v] = d_vars[v].d_assignment;
+      d_lastConsistentAssignment.get(v) = d_vars[v].d_assignment;
     }
   }
   // Clear changed variables tracking
@@ -726,7 +726,7 @@ void ArithVariables::restoreAssignment() {
     Assert(d_vars.isKey(v));
     Assert(d_lastConsistentAssignment.isKey(v));
     // Restore from last consistent assignment
-    d_vars[v].d_assignment = d_lastConsistentAssignment[v];
+    d_vars.get(v).d_assignment = d_lastConsistentAssignment.get(v);
   }
   // Clear changed variables tracking
   d_changedVars.purge();
