@@ -1,0 +1,1182 @@
+================================================================================
+OpenSMT Simplex 算法详细分析日志
+================================================================================
+生成时间: 2025
+目的: 为代码迁移工作提供 Simplex 算法的详细文档
+范围: 专注于 Simplex 类及其直接相关的数据结构和算法
+
+================================================================================
+第一部分: 关键函数 (Critical Functions)
+================================================================================
+
+1. Simplex 类 - 单纯形算法核心实现
+   ============================================
+   文件位置: opensmt/src/tsolvers/lasolver/Simplex.h, Simplex.cc
+   
+   1.1 Simplex::checkSimplex()
+      - 功能: 执行单纯形算法的主循环，这是 Simplex 算法的核心入口点
+      - 返回值: Explanation (空向量表示SAT，非空向量表示UNSAT并包含冲突解释)
+      - 算法类型: Dantzig单纯形法 + Bland规则（避免循环）
+      - 关键步骤:
+        * processBufferOfActivatedBounds() - 首先处理待激活的边界缓冲区
+        * 主循环 (while(true)):
+          - 选择违反边界的基本变量 x:
+            * 如果重复次数 > 列数，使用 Bland 规则
+            * 否则使用最短多项式启发式
+          - 如果找不到违反边界的基本变量，返回 SAT (空 Explanation)
+          - 寻找用于旋转的非基本变量 y:
+            * 根据是否使用 Bland 规则选择不同的查找策略
+          - 如果找不到可旋转的非基本变量，返回 UNSAT (包含冲突解释)
+          - 执行 pivot(x, y) 旋转操作
+        * 使用 Bland 规则避免循环: 当重复次数超过列数时自动切换
+        * 统计信息: 记录 Bland 操作和旋转操作的次数
+      - 时间复杂度: 最坏情况指数级，但实际中通常多项式级
+      - 关键不变量:
+        * 所有非基本变量必须在边界内
+        * 基本变量的值必须等于其多项式在当前赋值下的值
+   
+   1.2 Simplex::assertBound(LABoundRef boundRef)
+      - 功能: 断言一个边界约束并检查一致性
+      - 参数: boundRef - 边界引用
+      - 返回值: Explanation (如果存在冲突则返回解释，否则返回空)
+      - 关键操作:
+        * 获取边界关联的变量 boundTerm
+        * 检查变量是否无界 (isUnbounded)
+        * 检查简单 UNSAT: boundTriviallyUnsatisfied()
+          - 如果边界与现有边界冲突，立即返回冲突解释
+          - 冲突解释包含两个边界: 当前边界和冲突的相反边界
+        * 激活边界: boundActivated(boundTerm)
+          - 如果变量是 quasi-basic，转换为 basic
+          - 增加边界激活计数
+        * 检查简单 SAT: boundTriviallySatisfied()
+          - 如果当前赋值已满足边界，直接返回空解释
+        * 将边界推入模型: model->pushBound(boundRef)
+        * 将边界添加到待处理缓冲区: bufferOfActivatedBounds
+      - 设计特点:
+        * 延迟处理: 边界先加入缓冲区，在 checkSimplex() 开始时统一处理
+        * 增量更新: 只处理新激活的边界，避免重复计算
+   
+   1.3 Simplex::pivot(LVRef basic, LVRef nonBasic)
+      - 功能: 执行单纯形旋转操作，交换基本变量和非基本变量的角色
+      - 参数: 
+        * basic - 当前基本变量（违反边界）
+        * nonBasic - 非基本变量（用于旋转）
+      - 前置条件:
+        * basic 必须是基本变量 (tableau.isBasic(basic))
+        * nonBasic 必须是非基本变量 (tableau.isNonBasic(nonBasic))
+        * basic 的值必须与其多项式一致 (valueConsistent)
+      - 关键步骤:
+        * updateValues(basic, nonBasic) - 更新模型中的变量值
+          - 计算 nonBasic 需要的变化量，使得 basic 达到边界值
+          - 更新 nonBasic 及其影响的所有基本变量
+        * tableau.pivot(basic, nonBasic) - 更新单纯形表结构
+          - 交换变量类型: basic -> nonBasic, nonBasic -> basic
+          - 计算新的多项式表示
+          - 更新所有包含 nonBasic 的行
+        * eraseCandidate(basic) - 移除 basic 从候选集合
+        * 处理旋转后的 nonBasic:
+          - 如果没有激活的边界，转换为 quasi-basic
+          - 如果违反边界，加入候选集合
+      - 后置条件:
+        * 表结构一致性 (checkTableauConsistency)
+        * 值一致性 (checkValueConsistency)
+      - 副作用:
+        * 更新候选集合
+        * 可能改变其他基本变量的值
+        * 更新列到行的反向索引
+   
+   1.4 Simplex::getBasicVarToFixByShortestPoly()
+      - 功能: 使用最短多项式启发式选择要修复的基本变量
+      - 返回值: LVRef (违反边界的基本变量，如果找不到则返回 Undef)
+      - 启发式策略: 选择具有最小多项式大小的违反边界的基本变量
+      - 算法:
+        * 遍历候选集合 candidates
+        * 对每个候选变量，获取其多项式大小 (tableau.getPolySize())
+        * 选择多项式大小最小的变量
+      - 目的: 减少旋转操作的计算量
+        * 较小的多项式意味着旋转时需要更新的行更少
+        * 提高算法效率
+      - 前置条件: 所有候选变量必须是基本变量且违反边界
+   
+   1.5 Simplex::getBasicVarToFixByBland()
+      - 功能: 使用 Bland 规则选择要修复的基本变量
+      - 返回值: LVRef (违反边界的基本变量，如果找不到则返回 Undef)
+      - Bland 规则: 选择具有最小变量 ID 的违反边界的基本变量
+      - 算法:
+        * 遍历候选集合 candidates
+        * 对每个候选变量，获取其变量 ID (getVarId())
+        * 选择变量 ID 最小的变量
+      - 目的: 避免单纯形算法的循环
+        * Bland 规则保证算法在有限步内终止
+        * 用于检测和处理可能的循环情况
+      - 触发条件: 当重复次数超过列数时自动使用
+      - 前置条件: 所有候选变量必须是基本变量且违反边界
+   
+   1.6 Simplex::findNonBasicForPivotByHeuristic(LVRef basicVar)
+      - 功能: 使用启发式方法寻找用于旋转的非基本变量
+      - 参数: basicVar - 违反边界的基本变量
+      - 返回值: LVRef (非基本变量，如果找到；否则返回 Undef)
+      - 启发式策略: 优先选择出现在更少行中的非基本变量（更独立的变量）
+      - 算法逻辑:
+        * 如果 basicVar 违反下界 (isModelOutOfLowerBound):
+          - 遍历 basicVar 的多项式项
+          - 对于系数为正的项: 检查变量是否严格低于上界
+          - 对于系数为负的项: 检查变量是否严格高于下界
+          - 选择列大小最小的变量 (tableau.getColumn().size())
+        * 如果 basicVar 违反上界 (isModelOutOfUpperBound):
+          - 遍历 basicVar 的多项式项
+          - 对于系数为负的项: 检查变量是否严格低于上界
+          - 对于系数为正的项: 检查变量是否严格高于下界
+          - 选择列大小最小的变量
+      - 目的: 减少旋转后的影响范围
+        * 更独立的变量意味着旋转后需要更新的行更少
+        * 提高算法效率
+      - 条件检查: 确保旋转后变量值仍在边界内
+   
+   1.7 Simplex::findNonBasicForPivotByBland(LVRef basicVar)
+      - 功能: 使用 Bland 规则寻找用于旋转的非基本变量
+      - 参数: basicVar - 违反边界的基本变量
+      - 返回值: LVRef (非基本变量，如果找到；否则返回 Undef)
+      - Bland 规则: 选择具有最小变量 ID 的满足条件的非基本变量
+      - 算法逻辑:
+        * 如果 basicVar 违反下界:
+          - 遍历 basicVar 的多项式项
+          - 对于系数为正的项: 检查变量是否严格低于上界
+          - 对于系数为负的项: 检查变量是否严格高于下界
+          - 选择变量 ID 最小的变量
+        * 如果 basicVar 违反上界:
+          - 遍历 basicVar 的多项式项
+          - 对于系数为负的项: 检查变量是否严格低于上界
+          - 对于系数为正的项: 检查变量是否严格高于下界
+          - 选择变量 ID 最小的变量
+      - 目的: 保证算法终止
+        * Bland 规则确保在有限步内找到解或检测到不可满足
+      - 条件检查: 确保旋转后变量值仍在边界内
+   
+   1.8 Simplex::updateValues(LVRef basicVar, LVRef nonBasicVar)
+      - 功能: 在旋转后更新模型中的变量值
+      - 参数:
+        * basicVar - 基本变量（即将变为非基本）
+        * nonBasicVar - 非基本变量（即将变为基本）
+      - 关键操作:
+        * 确定 basicVar 的目标值:
+          - 如果违反下界: 目标值 = 下界值
+          - 如果违反上界: 目标值 = 上界值
+        * 计算 nonBasicVar 需要的变化量:
+          - nvDiff = (目标值 - 当前值) / 系数
+          - 系数来自 basicVar 的多项式中 nonBasicVar 的系数
+        * 调用 changeValueBy(nonBasicVar, nvDiff):
+          - 更新 nonBasicVar 的值
+          - 更新所有包含 nonBasicVar 的基本变量的值
+          - 检查并更新候选集合
+      - 设计特点:
+        * 增量更新: 只更新受影响的变量
+        * 一致性保证: 确保所有基本变量的值等于其多项式值
+   
+   1.9 Simplex::changeValueBy(LVRef var, Delta const & diff)
+      - 功能: 更新变量的值并传播到所有受影响的行
+      - 参数:
+        * var - 要更新的变量
+        * diff - 值的变化量
+      - 关键操作:
+        * 更新 var 的值: model->write(var, model->read(var) + diff)
+        * 遍历所有包含 var 的行 (tableau.getColumn(var)):
+          - 对于每个基本变量 row:
+            * 计算新值: 当前值 + 系数 * diff
+            * 更新模型: model->write(row, 新值)
+            * 检查是否违反边界:
+              - 如果违反: newCandidate(row)
+              - 如果满足: eraseCandidate(row)
+        * 跳过 quasi-basic 变量（它们没有激活的边界）
+      - 用途:
+        * 在旋转操作中更新变量值
+        * 在边界激活时调整变量值
+   
+   1.10 Simplex::getConflictingBounds(LVRef x, bool conflictOnLower)
+      - 功能: 生成冲突解释（Farkas 系数）
+      - 参数:
+        * x - 违反边界的基本变量
+        * conflictOnLower - 是否违反下界 (true) 或上界 (false)
+      - 返回值: Explanation (包含冲突边界及其系数的向量)
+      - 算法: 基于 Farkas 引理构建冲突解释
+        * 添加冲突的边界: {br_f, 1}
+        * 遍历 x 的多项式项:
+          - 对于系数为负的项:
+            * 如果冲突在下界: 使用变量的下界
+            * 如果冲突在上界: 使用变量的上界
+            * 系数 = -coeff
+          - 对于系数为正的项:
+            * 如果冲突在下界: 使用变量的上界
+            * 如果冲突在上界: 使用变量的下界
+            * 系数 = coeff
+        * 所有系数组合形成不可满足的线性组合
+      - 用途: 为 UNSAT 结果提供最小冲突集
+   
+   1.11 Simplex::processBufferOfActivatedBounds()
+      - 功能: 处理待激活边界的缓冲区
+      - 调用时机: checkSimplex() 开始时
+      - 关键操作:
+        * 从缓冲区末尾开始处理 (LIFO)
+        * 对于每个待激活的边界:
+          - 获取变量和边界引用
+          - 确保变量不是 quasi-basic
+          - 如果变量是非基本变量:
+            * 检查当前值是否满足边界
+            * 如果不满足，调整变量值使其满足边界
+          - 如果变量是基本变量:
+            * 检查是否违反边界
+            * 如果违反，加入候选集合
+      - 设计特点:
+        * 延迟处理: 边界先加入缓冲区，统一处理
+        * 避免重复计算: 只在需要时更新值
+   
+   1.12 Simplex::quasiToBasic(LVRef it)
+      - 功能: 将 quasi-basic 变量转换为 basic 变量
+      - 参数: it - quasi-basic 变量
+      - 关键操作:
+        * 调用 tableau.quasiToBasic(it) 更新表结构
+        * 重新计算变量的值:
+          - 遍历变量的多项式项
+          - 使用备份值 (readBackupValue) 计算
+          - 确保所有项的值都是备份值（一致性检查）
+          - 计算新值: sum(系数 * 变量值)
+        * 恢复变量值: model->restoreVarWithValue(it, val)
+      - 触发条件: 当 quasi-basic 变量的边界被激活时
+      - 目的: 延迟激活机制，只在需要时将变量加入表
+   
+   1.13 Simplex::boundActivated(LVRef v)
+      - 功能: 处理边界激活事件
+      - 参数: v - 变量
+      - 关键操作:
+        * 断言: 如果变量是 quasi-basic，激活计数必须为 0
+        * 如果变量是 quasi-basic，转换为 basic
+        * 增加边界激活计数: boundsActivated[getVarId(v)]++
+      - 调用时机: assertBound() 中
+   
+   1.14 Simplex::boundDeactivated(LVRef v)
+      - 功能: 处理边界停用事件
+      - 参数: v - 变量
+      - 关键操作:
+        * 断言: 激活计数必须大于 0
+        * 减少边界激活计数: boundsActivated[getVarId(v)]--
+        * 如果激活计数为 0 且变量是 basic，转换为 quasi-basic
+      - 调用时机: 回溯时
+   
+   1.15 Simplex::newCandidate(LVRef candidateVar)
+      - 功能: 将变量加入违反边界的候选集合
+      - 参数: candidateVar - 候选变量
+      - 前置条件: 变量必须是基本变量
+      - 操作: candidates.insert(candidateVar)
+      - 调用时机:
+        * 边界激活后发现变量违反边界
+        * 旋转后新变量违反边界
+   
+   1.16 Simplex::eraseCandidate(LVRef candidateVar)
+      - 功能: 从候选集合中移除变量
+      - 参数: candidateVar - 候选变量
+      - 操作: candidates.erase(candidateVar)
+      - 调用时机:
+        * 旋转后变量不再违反边界
+        * 值更新后变量满足边界
+   
+   1.17 Simplex::isModelOutOfBounds(LVRef v)
+      - 功能: 检查变量是否违反边界
+      - 返回值: bool
+      - 实现: isModelOutOfUpperBound(v) || isModelOutOfLowerBound(v)
+   
+   1.18 Simplex::isModelOutOfUpperBound(LVRef v)
+      - 功能: 检查变量是否违反上界
+      - 返回值: bool
+      - 实现: model->hasUBound(v) && model->read(v) > model->Ub(v)
+   
+   1.19 Simplex::isModelOutOfLowerBound(LVRef v)
+      - 功能: 检查变量是否违反下界
+      - 返回值: bool
+      - 返回值: bool
+      - 实现: model->hasLBound(v) && model->read(v) < model->Lb(v)
+   
+   1.20 Simplex::isModelStrictlyUnderUpperBound(LVRef v)
+      - 功能: 检查变量是否严格低于上界（或无上界）
+      - 返回值: bool
+      - 实现: !model->hasUBound(v) || model->read(v) < model->Ub(v)
+      - 用途: 在旋转选择中判断变量是否有调整空间
+   
+   1.21 Simplex::isModelStrictlyOverLowerBound(LVRef v)
+      - 功能: 检查变量是否严格高于下界（或无下界）
+      - 返回值: bool
+      - 实现: !model->hasLBound(v) || model->read(v) > model->Lb(v)
+      - 用途: 在旋转选择中判断变量是否有调整空间
+   
+   1.22 Simplex::valueConsistent(LVRef v)
+      - 功能: 检查基本变量的值是否与其多项式一致
+      - 参数: v - 基本变量
+      - 返回值: bool
+      - 算法:
+        * 获取变量的当前值: model->read(v)
+        * 计算多项式的值: sum(系数 * 变量值)
+        * 比较两者是否相等
+      - 用途: 调试和一致性检查
+   
+   1.23 Simplex::checkValueConsistency()
+      - 功能: 检查所有基本变量的值一致性
+      - 返回值: bool
+      - 算法: 遍历所有行，对每个基本变量调用 valueConsistent()
+      - 用途: 调试和断言检查
+   
+   1.24 Simplex::invariantHolds()
+      - 功能: 检查 Simplex 算法的不变量
+      - 返回值: bool
+      - 检查内容:
+        * 所有非基本变量必须在边界内
+        * 如果违反，输出调试信息
+      - 用途: 调试和正确性验证
+   
+   1.25 Simplex::computeDelta()
+      - 功能: 计算 Delta 值（用于严格不等式的处理）
+      - 返回值: Real
+      - 算法: 根据技术报告计算满足所有不等式的最小 delta
+        * 对于每个变量，考虑下界和上界
+        * 计算满足每个边界所需的 delta
+        * 取最小值，但不超过 1
+      - 用途: 处理严格不等式 (<, >) 和松弛不等式 (<=, >=) 的区别
+   
+   1.26 Simplex::getPolaritySuggestion(LVRef var, LABoundRef pos, LABoundRef neg)
+      - 功能: 为变量提供极性建议（用于决策启发式）
+      - 参数:
+        * var - 变量
+        * pos - 正边界引用
+        * neg - 负边界引用
+      - 返回值: lbool (l_True, l_False, 或 l_Undef)
+      - 算法:
+        * 如果变量是 quasi-basic，先转换为 basic
+        * 检查当前值是否满足正边界
+        * 检查当前值是否满足负边界
+        * 返回相应的建议
+      - 用途: 帮助 SAT 求解器做出更好的决策
+
+2. Tableau 类 - 单纯形表数据结构操作
+   ============================================
+   文件位置: opensmt/src/tsolvers/lasolver/Tableau.h, Tableau.cc
+   
+   2.1 Tableau::pivot(LVRef bv, LVRef nv)
+      - 功能: 执行表旋转操作，交换基本变量和非基本变量的角色
+      - 参数:
+        * bv - 基本变量（即将变为非基本）
+        * nv - 非基本变量（即将变为基本）
+      - 关键步骤:
+        * 更新变量类型:
+          - varTypes[getVarId(bv)] = VarType::NONBASIC
+          - varTypes[getVarId(nv)] = VarType::BASIC
+        * 计算 nv 的新多项式:
+          - 从 bv 的多项式中移除 nv 项，获取系数
+          - 如果系数不为 1，除以系数
+          - 取反多项式
+          - 添加 bv 项，系数为原系数的倒数
+        * 移动行结构: moveRowFromTo(bv, nv)
+        * 移动列结构: moveColFromTo(nv, bv)
+        * 更新列信息:
+          - 从 nv 的新多项式的每个变量列中移除 bv，添加 nv
+        * 更新所有包含 nv 的行:
+          - 对于 bv 列中的每个行变量:
+            * 如果行变量是 nv 或 quasi-basic，跳过
+            * 从行多项式中移除 nv 项
+            * 合并 nv 的新多项式（使用系数）
+            * 更新列到行的索引
+      - 复杂度: O(包含 nv 的行数 * 多项式大小)
+   
+   2.2 Tableau::newRow(LVRef v, std::unique_ptr<Polynomial> poly)
+      - 功能: 为基本变量添加新行
+      - 参数:
+        * v - 基本变量
+        * poly - 表示变量的多项式
+      - 关键操作:
+        * 确保表已准备好: ensureTableauReadyFor(v)
+        * 添加行: addRow(v, std::move(poly))
+        * 标记变量类型为 QUASIBASIC
+        * 规范化行: normalizeRow(v)
+      - 设计特点: 新添加的行初始为 quasi-basic，延迟激活
+   
+   2.3 Tableau::normalizeRow(LVRef row)
+      - 功能: 规范化行，消除其中的 quasi-basic 和 basic 变量
+      - 参数: row - 行变量（必须是 quasi-basic）
+      - 算法:
+        * 收集需要消除的变量:
+          - 所有 quasi-basic 变量（递归规范化）
+          - 所有 basic 变量
+        * 对于每个要消除的变量:
+          - 从行中移除变量，获取系数
+          - 合并变量的多项式（使用系数）
+        * 结果: 行只包含 non-basic 变量
+      - 目的: 确保行表示中只包含非基本变量
+   
+   2.4 Tableau::quasiToBasic(LVRef v)
+      - 功能: 将 quasi-basic 变量转换为 basic 变量
+      - 参数: v - quasi-basic 变量
+      - 关键操作:
+        * 规范化行: normalizeRow(v)
+        * 更新列索引:
+          - 对于行多项式中的每个变量，将 v 添加到其列中
+        * 更新变量类型: VarType::BASIC
+      - 触发条件: 当 quasi-basic 变量的边界被激活时
+   
+   2.5 Tableau::basicToQuasi(LVRef v)
+      - 功能: 将 basic 变量转换为 quasi-basic 变量
+      - 参数: v - basic 变量
+      - 关键操作:
+        * 更新变量类型: VarType::QUASIBASIC
+        * 更新列索引:
+          - 对于行多项式中的每个变量，从列中移除 v
+      - 触发条件: 当 basic 变量的所有边界都被停用时
+   
+   2.6 Tableau::getRowPoly(LVRef basicVar)
+      - 功能: 获取基本变量的多项式表示
+      - 返回值: Polynomial& (const 和非 const 版本)
+      - 前置条件: 变量必须是 basic 或 quasi-basic
+   
+   2.7 Tableau::getColumn(LVRef nonBasicVar)
+      - 功能: 获取非基本变量的列
+      - 返回值: column_t& (包含该非基本变量的所有行的列表)
+      - 用途: 快速查找包含某个非基本变量的所有行
+   
+   2.8 Tableau::getCoeff(LVRef basicVar, LVRef nonBasicVar)
+      - 功能: 获取基本变量多项式中非基本变量的系数
+      - 返回值: Real const&
+      - 前置条件: 变量必须是 basic，nonBasicVar 必须在多项式中
+   
+   2.9 Tableau::getPolySize(LVRef basicVar)
+      - 功能: 获取基本变量多项式的大小（项数）
+      - 返回值: std::size_t
+      - 用途: 用于最短多项式启发式
+   
+   2.10 Tableau::getNumOfCols()
+      - 功能: 获取非基本变量的数量
+      - 返回值: std::size_t
+      - 用途: 用于 Bland 规则的触发条件
+
+3. LRAModel 类 - 模型操作（Simplex 使用）
+   ============================================
+   文件位置: opensmt/src/tsolvers/lasolver/LRAModel.h, LRAModel.cc
+   
+   3.1 LRAModel::read(const LVRef &v)
+      - 功能: 读取变量的当前赋值
+      - 返回值: const Delta&
+      - 实现: current_assignment[getVarId(v)]
+   
+   3.2 LRAModel::write(const LVRef &v, Delta value)
+      - 功能: 写入变量的赋值
+      - 副作用: 标记变量为已更改
+      - 实现:
+        * current_assignment[getVarId(v)] = value
+        * changed_vars_set.add(getVarId(v))
+        * changed_vars_vec.push(v) [如果未在集合中]
+   
+   3.3 LRAModel::pushBound(const LABoundRef br)
+      - 功能: 将边界推入边界栈
+      - 操作: 根据边界类型添加到相应的栈
+        * 下界: int_lbounds[getVarId(v)].push(br)
+        * 上界: int_ubounds[getVarId(v)].push(br)
+   
+   3.4 LRAModel::readLBoundRef(LVRef v)
+      - 功能: 读取变量的当前下界引用
+      - 返回值: LABoundRef
+      - 实现: int_lbounds[getVarId(v)].last()
+   
+   3.5 LRAModel::readUBoundRef(LVRef v)
+      - 功能: 读取变量的当前上界引用
+      - 返回值: LABoundRef
+      - 实现: int_ubounds[getVarId(v)].last()
+   
+   3.6 LRAModel::Lb(LVRef v)
+      - 功能: 读取变量的下界值
+      - 返回值: const Delta&
+      - 实现: readLBound(v).getValue()
+   
+   3.7 LRAModel::Ub(LVRef v)
+      - 功能: 读取变量的上界值
+      - 返回值: const Delta&
+      - 实现: readUBound(v).getValue()
+   
+   3.8 LRAModel::hasLBound(LVRef v)
+      - 功能: 检查变量是否有下界
+      - 返回值: bool
+      - 实现: int_lbounds[getVarId(v)].size() != 0
+   
+   3.9 LRAModel::hasUBound(LVRef v)
+      - 功能: 检查变量是否有上界
+      - 返回值: bool
+      - 实现: int_ubounds[getVarId(v)].size() != 0
+   
+   3.10 LRAModel::saveAssignment()
+      - 功能: 保存当前赋值到一致状态
+      - 操作:
+        * 遍历 changed_vars_vec
+        * 将 current_assignment 复制到 last_consistent_assignment
+        * 清空 changed_vars_vec 和 changed_vars_set
+      - 调用时机: checkSimplex() 返回 SAT 时
+   
+   3.11 LRAModel::restoreAssignment()
+      - 功能: 恢复到上次一致状态
+      - 操作:
+        * 遍历 changed_vars_vec
+        * 从 last_consistent_assignment 恢复值
+        * 清空 changed_vars_vec 和 changed_vars_set
+      - 调用时机: checkSimplex() 检测到 UNSAT 时
+   
+   3.12 LRAModel::restoreVarWithValue(LVRef v, Delta val)
+      - 功能: 恢复变量值（Simplex 专用）
+      - 操作:
+        * current_assignment[getVarId(v)] = val
+        * last_consistent_assignment[getVarId(v)] = val
+      - 调用时机: quasiToBasic() 时
+
+================================================================================
+第二部分: 数据结构 (Data Structures)
+================================================================================
+
+1. Simplex 类数据成员
+   ============================================
+   文件位置: opensmt/src/tsolvers/lasolver/Simplex.h
+   
+   1.1 std::unique_ptr<LRAModel> model
+      - 类型: std::unique_ptr<LRAModel>
+      - 用途: 管理变量的赋值和边界
+      - 职责:
+        * 存储当前赋值 (current_assignment)
+        * 存储上次一致赋值 (last_consistent_assignment)
+        * 管理边界栈 (int_lbounds, int_ubounds)
+        * 跟踪已更改变量 (changed_vars_set, changed_vars_vec)
+      - 生命周期: 与 Simplex 对象相同
+   
+   1.2 LABoundStore & boundStore
+      - 类型: LABoundStore& (引用)
+      - 用途: 访问边界存储
+      - 职责:
+        * 提供边界对象的访问
+        * 管理边界的分配和存储
+      - 生命周期: 由外部管理
+   
+   1.3 Tableau tableau
+      - 类型: Tableau
+      - 用途: 管理单纯形表结构
+      - 职责:
+        * 存储基本变量的多项式表示 (rows)
+        * 存储非基本变量的列索引 (cols)
+        * 管理变量类型 (varTypes)
+      - 生命周期: 与 Simplex 对象相同
+   
+   1.4 SimplexStats simplex_stats
+      - 类型: SimplexStats
+      - 用途: 统计信息
+      - 数据成员:
+        * int num_bland_ops: Bland 操作次数
+        * int num_pivot_ops: 旋转操作次数
+      - 用途: 性能分析和调试
+   
+   1.5 std::set<LVRef, LVRefComp> candidates
+      - 类型: std::set<LVRef, LVRefComp>
+      - 用途: 违反边界的候选变量集合
+      - 特点:
+        * 有序集合（按变量 ID 排序）
+        * 只包含基本变量
+        * 只包含违反边界的变量
+      - 操作:
+        * newCandidate(): 添加候选
+        * eraseCandidate(): 移除候选
+        * 在 checkSimplex() 中用于选择要修复的变量
+   
+   1.6 std::vector<std::pair<LVRef, LABoundRef>> bufferOfActivatedBounds
+      - 类型: std::vector<std::pair<LVRef, LABoundRef>>
+      - 用途: 待激活边界的缓冲区
+      - 特点:
+        * LIFO 顺序处理
+        * 延迟处理机制
+      - 操作:
+        * assertBound() 时添加
+        * processBufferOfActivatedBounds() 时处理
+   
+   1.7 std::vector<unsigned int> boundsActivated
+      - 类型: std::vector<unsigned int>
+      - 用途: 每个变量的激活边界计数
+      - 索引: getVarId(v)
+      - 用途:
+        * 跟踪每个变量有多少个边界被激活
+        * 决定变量是否应该从 basic 转换为 quasi-basic
+
+2. Simplex::Explanation 类型
+   ============================================
+   文件位置: opensmt/src/tsolvers/lasolver/Simplex.h
+   
+   2.1 ExplTerm 结构
+      - 定义: struct ExplTerm { LABoundRef boundref; Real coeff; }
+      - 用途: 表示冲突解释中的一个项
+      - 成员:
+        * LABoundRef boundref: 边界引用
+        * Real coeff: Farkas 系数
+   
+   2.2 Explanation 类型
+      - 定义: using Explanation = std::vector<ExplTerm>
+      - 用途: 存储冲突解释（Farkas 系数）
+      - 语义:
+        * 空向量: 表示 SAT（可满足）
+        * 非空向量: 表示 UNSAT（不可满足），包含冲突边界及其系数
+      - 使用:
+        * checkSimplex() 返回 Explanation
+        * getConflictingBounds() 生成 Explanation
+
+3. Tableau 类数据成员
+   ============================================
+   文件位置: opensmt/src/tsolvers/lasolver/Tableau.h
+   
+   3.1 std::vector<std::unique_ptr<column_t>> cols
+      - 类型: std::vector<std::unique_ptr<column_t>>
+      - 用途: 非基本变量的列向量
+      - 索引: getVarId(nonBasicVar)
+      - 特点:
+        * 稀疏表示（只为非基本变量分配）
+        * 每个列包含所有包含该非基本变量的行
+      - Column 类:
+        * std::vector<LVRef> rows: 包含该非基本变量的所有行的列表
+        * 方法: addRow(), removeRow(), clear(), size()
+   
+   3.2 rows_t rows
+      - 类型: rows_t = std::vector<std::unique_ptr<Polynomial>>
+      - 用途: 基本变量的多项式表示
+      - 索引: getVarId(basicVar)
+      - 特点:
+        * 稀疏表示（只为基本变量分配）
+        * 每个多项式表示基本变量如何用非基本变量表示
+      - Polynomial 类型:
+        * 使用 PolynomialT<LVRef> 模板
+        * 存储 var-coeff 对
+   
+   3.3 std::vector<VarType> varTypes
+      - 类型: std::vector<VarType>
+      - 用途: 变量类型数组
+      - 索引: getVarId(v)
+      - VarType 枚举:
+        * NONE: 未处理
+        * BASIC: 基本变量（有对应的行）
+        * NONBASIC: 非基本变量（有对应的列）
+        * QUASIBASIC: 准基本变量（有行但未激活边界）
+   
+   3.4 Tableau::Polynomial::poly_t tmp_storage
+      - 类型: Polynomial::poly_t
+      - 用途: 临时存储（用于多项式合并操作）
+      - 特点: 避免频繁分配内存
+
+4. LRAModel 类数据成员（Simplex 使用）
+   ============================================
+   文件位置: opensmt/src/tsolvers/lasolver/LRAModel.h
+   
+   4.1 std::vector<vec<LABoundRef>> int_lbounds
+      - 类型: std::vector<vec<LABoundRef>>
+      - 用途: 每个变量的下界栈
+      - 索引: getVarId(v)
+      - 特点: 栈结构，支持回溯
+   
+   4.2 std::vector<vec<LABoundRef>> int_ubounds
+      - 类型: std::vector<vec<LABoundRef>>
+      - 用途: 每个变量的上界栈
+      - 索引: getVarId(v)
+      - 特点: 栈结构，支持回溯
+   
+   4.3 vec<int> bound_limits
+      - 类型: vec<int>
+      - 用途: 回溯点的边界限制
+      - 用途: 支持回溯操作
+   
+   4.4 vec<LABoundRef> bound_trace
+      - 类型: vec<LABoundRef>
+      - 用途: 边界追踪
+      - 用途: 支持回溯操作
+   
+   4.5 std::vector<Delta> current_assignment
+      - 类型: std::vector<Delta>
+      - 用途: 当前赋值
+      - 索引: getVarId(v)
+      - 特点: 存储变量的当前值（可能不一致）
+   
+   4.6 std::vector<Delta> last_consistent_assignment
+      - 类型: std::vector<Delta>
+      - 用途: 上次一致赋值
+      - 索引: getVarId(v)
+      - 特点: 存储变量的上次一致值（用于恢复）
+   
+   4.7 nat_set changed_vars_set
+      - 类型: nat_set
+      - 用途: 已更改变量的集合
+      - 特点: 快速查找
+   
+   4.8 vec<LVRef> changed_vars_vec
+      - 类型: vec<LVRef>
+      - 用途: 已更改变量的向量
+      - 特点: 保持顺序，用于遍历
+
+5. 核心引用类型
+   ============================================
+   文件位置: opensmt/src/tsolvers/lasolver/LARefs.h
+   
+   5.1 LVRef (Linear Variable Reference)
+      - 类型: struct { uint32_t x; }
+      - 用途: 引用线性算术变量
+      - 特殊值: LVRef::Undef = { INT32_MAX }
+      - 哈希: LVRefHash (基于 x 值)
+      - 比较: LVRefComp (基于 x 值，用于 std::set 排序)
+      - 操作: getVarId(LVRef) 获取变量 ID
+   
+   5.2 LABoundRef (Linear Arithmetic Bound Reference)
+      - 类型: struct { uint32_t x; }
+      - 用途: 引用边界对象
+      - 特殊值:
+        * LABoundRef_Undef = { INT32_MAX }
+        * LABoundRef_Infty = { 0 }
+   
+   5.3 BoundT (Bound Type)
+      - 类型: struct { char t; }
+      - 值: bound_l (下界, t=0), bound_u (上界, t=1)
+      - 操作: ~bound_l = bound_u (取反)
+
+6. Delta 类
+   ============================================
+   文件位置: opensmt/src/tsolvers/lasolver/Delta.h, Delta.cc
+   
+   6.1 数据成员:
+      - Real r: 主值（实数部分）
+      - Real d: 严格性增量（用于区分 < 和 <=）
+   
+   6.2 关键操作:
+      - 比较运算符: <, <=, >, >=, ==, !=
+      - 算术运算符: +, -, *, /
+      - hasDelta(): 检查是否有严格性增量
+      - R(): 获取主值
+      - D(): 获取增量值
+   
+   6.3 用途:
+      - 表示变量的赋值
+      - 表示边界值（支持严格和非严格不等式）
+      - 区分 x < c 和 x <= c
+
+7. Polynomial 类
+   ============================================
+   文件位置: opensmt/src/common/polynomials/Polynomial.h
+   
+   7.1 类型定义:
+      - using Polynomial = PolynomialT<LVRef>
+      - 模板参数: LVRef (变量类型)
+   
+   7.2 数据成员:
+      - poly_t terms: 项列表 (var-coeff 对)
+   
+   7.3 关键操作:
+      - addTerm(LVRef var, Real coeff): 添加项
+      - removeVar(LVRef var): 移除变量并返回系数
+      - getCoeff(LVRef var): 获取系数
+      - divideBy(Real c): 除以常数
+      - negate(): 取反
+      - size(): 获取项数
+      - merge(): 合并多项式（用于变量替换）
+      - contains(): 检查是否包含变量
+      - 迭代器: 支持范围 for 循环
+
+================================================================================
+第三部分: 函数调用关系 (Function Call Relations)
+================================================================================
+
+1. 主要求解流程调用链
+   ============================================
+   
+   1.1 Simplex::checkSimplex() 主流程:
+      Simplex::checkSimplex()
+        -> Simplex::processBufferOfActivatedBounds()
+          -> [对每个待激活边界]
+            -> Simplex::changeValueBy(LVRef var, Delta diff) [如果是非基本变量]
+              -> LRAModel::write(LVRef v, Delta)
+              -> Tableau::getColumn(LVRef var)
+              -> [对每个包含 var 的行]
+                -> LRAModel::read(LVRef row)
+                -> LRAModel::write(LVRef row, Delta)
+                -> Simplex::isModelOutOfBounds(LVRef row)
+                -> Simplex::newCandidate(LVRef) 或 eraseCandidate(LVRef)
+            -> Simplex::isModelOutOfBounds(LVRef var) [如果是基本变量]
+            -> Simplex::newCandidate(LVRef var) [如果违反边界]
+        -> [主循环开始]
+          -> Simplex::getBasicVarToFixByShortestPoly() 或
+             Simplex::getBasicVarToFixByBland()
+            -> Tableau::getPolySize(LVRef var) [最短多项式]
+            -> getVarId(LVRef var) [Bland 规则]
+            -> Simplex::isModelOutOfBounds(LVRef var)
+          -> [如果找到违反边界的基本变量 x]
+            -> Simplex::findNonBasicForPivotByHeuristic(x) 或
+               Simplex::findNonBasicForPivotByBland(x)
+              -> Tableau::getRowPoly(LVRef basicVar)
+              -> [遍历多项式项]
+                -> Simplex::isModelStrictlyUnderUpperBound(LVRef var)
+                -> Simplex::isModelStrictlyOverLowerBound(LVRef var)
+                -> Tableau::getColumn(LVRef var) [启发式]
+                -> getVarId(LVRef var) [Bland 规则]
+            -> [如果找到非基本变量 y]
+              -> Simplex::pivot(LVRef basic, LVRef nonBasic)
+                -> Simplex::updateValues(LVRef basicVar, LVRef nonBasicVar)
+                  -> Simplex::isModelOutOfLowerBound(LVRef basicVar)
+                  -> Simplex::isModelOutOfUpperBound(LVRef basicVar)
+                  -> LRAModel::Lb(LVRef v) 或 LRAModel::Ub(LVRef v)
+                  -> LRAModel::read(LVRef v)
+                  -> Tableau::getCoeff(LVRef basicVar, LVRef nonBasicVar)
+                  -> Simplex::changeValueBy(LVRef nonBasicVar, Delta diff)
+                -> Tableau::pivot(LVRef bv, LVRef nv)
+                  -> Tableau::getRowPoly(LVRef basicVar)
+                  -> Tableau::Polynomial::removeVar(LVRef var)
+                  -> Tableau::Polynomial::divideBy(Real c)
+                  -> Tableau::Polynomial::negate()
+                  -> Tableau::Polynomial::addTerm(LVRef, Real)
+                  -> Tableau::moveRowFromTo(LVRef from, LVRef to)
+                  -> Tableau::moveColFromTo(LVRef from, LVRef to)
+                  -> Tableau::getColumn(LVRef nonBasicVar)
+                  -> [对每个包含 nonBasic 的行]
+                    -> Tableau::getRowPoly(LVRef rowVar)
+                    -> Tableau::Polynomial::removeVar(LVRef var)
+                    -> Tableau::Polynomial::merge()
+                      -> Tableau::addRowToColumn(LVRef row, LVRef col)
+                      -> Tableau::removeRowFromColumn(LVRef row, LVRef col)
+                -> Simplex::eraseCandidate(LVRef basicVar)
+                -> Simplex::getNumOfBoundsActive(LVRef nonBasicVar)
+                -> Tableau::basicToQuasi(LVRef v) [如果没有激活边界]
+                -> Simplex::isModelOutOfBounds(LVRef nonBasicVar)
+                -> Simplex::newCandidate(LVRef nonBasicVar) [如果违反边界]
+            -> [如果找不到非基本变量]
+              -> Simplex::isModelOutOfLowerBound(LVRef x)
+              -> LRAModel::restoreAssignment()
+              -> Simplex::getConflictingBounds(LVRef x, bool conflictOnLower)
+                -> LRAModel::readLBoundRef(LVRef v) 或
+                   LRAModel::readUBoundRef(LVRef v)
+                -> Tableau::getRowPoly(LVRef x)
+                -> [遍历多项式项]
+                  -> LRAModel::readLBoundRef(LVRef var) 或
+                     LRAModel::readUBoundRef(LVRef var)
+          -> [如果没有违反边界的基本变量]
+            -> LRAModel::saveAssignment()
+            -> return Explanation() [SAT]
+        -> [循环结束]
+
+   1.2 边界断言流程:
+      Simplex::assertBound(LABoundRef boundRef)
+        -> LABoundStore::operator[](LABoundRef)
+        -> LABound::getLVRef()
+        -> LRAModel::isUnbounded(LVRef v)
+        -> LRAModel::boundTriviallyUnsatisfied(LVRef v, LABoundRef)
+          -> [如果冲突]
+            -> LRAModel::readLBoundRef(LVRef v) 或
+               LRAModel::readUBoundRef(LVRef v)
+            -> return Explanation {{br, 1}, {boundRef, 1}}
+        -> Simplex::boundActivated(LVRef boundTerm)
+          -> Tableau::isQuasiBasic(LVRef v)
+          -> Simplex::quasiToBasic(LVRef it) [如果是 quasi-basic]
+            -> Tableau::quasiToBasic(LVRef v)
+              -> Tableau::normalizeRow(LVRef v)
+                -> Tableau::getRowPoly(LVRef v)
+                -> [收集需要消除的变量]
+                -> Tableau::isQuasiBasic(LVRef var) [递归]
+                -> Tableau::isBasic(LVRef var)
+                -> Tableau::Polynomial::removeVar(LVRef var)
+                -> Tableau::getRowPoly(LVRef var)
+                -> Tableau::Polynomial::merge()
+              -> [对每个项]
+                -> Tableau::addRowToColumn(LVRef row, LVRef col)
+            -> Tableau::getRowPoly(LVRef it)
+            -> [遍历多项式项]
+              -> LRAModel::readBackupValue(LVRef var)
+            -> LRAModel::restoreVarWithValue(LVRef v, Delta val)
+          -> boundsActivated[getVarId(v)]++
+        -> LRAModel::boundTriviallySatisfied(LVRef v, LABoundRef)
+          -> [如果满足]
+            -> return Explanation()
+        -> LRAModel::pushBound(LABoundRef br)
+        -> bufferOfActivatedBounds.emplace_back(boundTerm, boundRef)
+        -> return Explanation()
+
+2. 旋转操作详细调用链
+   ============================================
+   
+   2.1 Simplex::pivot() 完整流程:
+      Simplex::pivot(LVRef basic, LVRef nonBasic)
+        -> Simplex::valueConsistent(LVRef basic) [断言检查]
+        -> Simplex::updateValues(LVRef basicVar, LVRef nonBasicVar)
+          -> Simplex::isModelOutOfLowerBound(LVRef basicVar)
+          -> Simplex::isModelOutOfUpperBound(LVRef basicVar)
+          -> LRAModel::Lb(LVRef v) 或 LRAModel::Ub(LVRef v)
+          -> LRAModel::read(LVRef basicVar)
+          -> Tableau::getCoeff(LVRef basicVar, LVRef nonBasicVar)
+          -> [计算 nvDiff = (目标值 - 当前值) / 系数]
+          -> Simplex::changeValueBy(LVRef nonBasicVar, Delta nvDiff)
+            -> LRAModel::read(LVRef var)
+            -> LRAModel::write(LVRef var, Delta)
+            -> Tableau::getColumn(LVRef var)
+            -> [对每个包含 var 的行]
+              -> Tableau::isBasic(LVRef row)
+              -> Tableau::getCoeff(LVRef row, LVRef var)
+              -> LRAModel::read(LVRef row)
+              -> LRAModel::write(LVRef row, Delta)
+              -> Simplex::isModelOutOfBounds(LVRef row)
+              -> Simplex::newCandidate(LVRef row) 或
+                 Simplex::eraseCandidate(LVRef row)
+        -> Tableau::pivot(LVRef bv, LVRef nv)
+          -> Tableau::isBasic(LVRef bv) [断言]
+          -> Tableau::isNonBasic(LVRef nv) [断言]
+          -> varTypes[getVarId(bv)] = VarType::NONBASIC
+          -> varTypes[getVarId(nv)] = VarType::BASIC
+          -> Tableau::getRowPoly(LVRef bv)
+          -> Tableau::Polynomial::removeVar(LVRef nv)
+          -> Tableau::Polynomial::divideBy(Real coeff) [如果系数不为 1]
+          -> Tableau::Polynomial::negate()
+          -> Tableau::Polynomial::addTerm(LVRef bv, Real coeff.inverse())
+          -> Tableau::moveRowFromTo(LVRef bv, LVRef nv)
+          -> Tableau::moveColFromTo(LVRef nv, LVRef bv)
+          -> Tableau::getRowPoly(LVRef nv)
+          -> [对 nv 多项式的每个项]
+            -> Tableau::removeRowFromColumn(LVRef bv, LVRef var)
+            -> Tableau::addRowToColumn(LVRef nv, LVRef var)
+          -> Tableau::getColumn(LVRef bv)
+          -> [对 bv 列中的每个行变量]
+            -> Tableau::isQuasiBasic(LVRef rowVar) [跳过]
+            -> Tableau::getRowPoly(LVRef rowVar)
+            -> Tableau::Polynomial::removeVar(LVRef nv)
+            -> Tableau::Polynomial::merge()
+              -> [对 nvPoly 的每一项]
+                -> Tableau::Polynomial::addTerm(LVRef var, Real coeff)
+              -> Tableau::addRowToColumn(LVRef rowVar, LVRef addedVar)
+              -> Tableau::removeRowFromColumn(LVRef rowVar, LVRef removedVar)
+        -> Simplex::eraseCandidate(LVRef basicVar)
+        -> Simplex::getNumOfBoundsActive(LVRef nonBasicVar)
+        -> Tableau::basicToQuasi(LVRef nonBasicVar) [如果没有激活边界]
+          -> varTypes[getVarId(v)] = VarType::QUASIBASIC
+          -> Tableau::getRowPoly(LVRef v)
+          -> [对每个项]
+            -> Tableau::removeRowFromColumn(LVRef v, LVRef var)
+        -> Simplex::isModelOutOfBounds(LVRef nonBasicVar)
+        -> Simplex::newCandidate(LVRef nonBasicVar) [如果违反边界]
+        -> Simplex::checkTableauConsistency() [断言]
+        -> Simplex::checkValueConsistency() [断言]
+
+3. 边界处理调用链
+   ============================================
+   
+   3.1 边界激活处理:
+      Simplex::processBufferOfActivatedBounds()
+        -> [从缓冲区末尾开始]
+          -> bufferOfActivatedBounds.back()
+          -> bufferOfActivatedBounds.pop_back()
+          -> Tableau::isQuasiBasic(LVRef var) [断言]
+          -> [如果变量是非基本变量]
+            -> Tableau::isNonBasic(LVRef var)
+            -> LABoundStore::operator[](LABoundRef)
+            -> LABound::getValue()
+            -> Simplex::isBoundSatisfied(Delta, LABound) [辅助函数]
+            -> Simplex::changeValueBy(LVRef var, Delta diff)
+          -> [如果变量是基本变量]
+            -> Tableau::isBasic(LVRef var)
+            -> Simplex::isModelOutOfBounds(LVRef var)
+            -> Simplex::newCandidate(LVRef var) [如果违反]
+            -> [断言: 如果满足，不应在候选集合中]
+
+   3.2 边界激活事件:
+      Simplex::boundActivated(LVRef v)
+        -> Tableau::isQuasiBasic(LVRef v) [断言检查]
+        -> Simplex::quasiToBasic(LVRef v) [如果是 quasi-basic]
+        -> boundsActivated[getVarId(v)]++
+
+   3.3 边界停用事件:
+      Simplex::boundDeactivated(LVRef v)
+        -> boundsActivated[getVarId(v)]-- [断言: > 0]
+        -> Simplex::getNumOfBoundsActive(LVRef v)
+        -> Tableau::isBasic(LVRef v)
+        -> Tableau::basicToQuasi(LVRef v) [如果计数为 0]
+
+4. 值一致性检查调用链
+   ============================================
+   
+   4.1 单个变量一致性检查:
+      Simplex::valueConsistent(LVRef v)
+        -> LRAModel::read(LVRef v)
+        -> Tableau::getRowPoly(LVRef v)
+        -> [遍历多项式项]
+          -> Tableau::Polynomial::term.var
+          -> Tableau::Polynomial::term.coeff
+          -> LRAModel::read(LVRef term.var)
+          -> [计算 sum += coeff * value]
+        -> [比较 value == sum]
+
+   4.2 全局一致性检查:
+      Simplex::checkValueConsistency()
+        -> Tableau::getRows()
+        -> [遍历所有行]
+          -> Tableau::isBasic(LVRef var)
+          -> Simplex::valueConsistent(LVRef var)
+
+5. 冲突解释生成调用链
+   ============================================
+   
+   5.1 冲突检测和解释生成:
+      Simplex::getConflictingBounds(LVRef x, bool conflictOnLower)
+        -> [如果冲突在下界]
+          -> LRAModel::readLBoundRef(LVRef x)
+        -> [如果冲突在上界]
+          -> LRAModel::readUBoundRef(LVRef x)
+        -> Explanation::push_back({br_f, 1})
+        -> Tableau::getRowPoly(LVRef x)
+        -> [遍历多项式项]
+          -> Tableau::Polynomial::term.coeff
+          -> Tableau::Polynomial::term.var
+          -> [如果系数为负]
+            -> [如果冲突在下界]
+              -> LRAModel::readLBoundRef(LVRef var)
+            -> [如果冲突在上界]
+              -> LRAModel::readUBoundRef(LVRef var)
+            -> Explanation::push_back({br, -coeff})
+          -> [如果系数为正]
+            -> [如果冲突在下界]
+              -> LRAModel::readUBoundRef(LVRef var)
+            -> [如果冲突在上界]
+              -> LRAModel::readLBoundRef(LVRef var)
+            -> Explanation::push_back({br, coeff})
+        -> return Explanation
+
+6. 回溯调用链
+   ============================================
+   
+   6.1 回溯点创建:
+      Simplex::pushBacktrackPoint()
+        -> LRAModel::pushBacktrackPoint()
+          -> bound_limits.push(bound_trace.size())
+   
+   6.2 回溯执行:
+      Simplex::popBacktrackPoint()
+        -> LRAModel::popBacktrackPoint()
+          -> LRAModel::popBounds()
+            -> [恢复边界栈到上一个回溯点]
+        -> Simplex::finalizeBacktracking()
+          -> [断言: changed_vars_vec 为空]
+          -> candidates.clear()
+          -> bufferOfActivatedBounds.clear()
+          -> Simplex::checkValueConsistency() [断言]
+          -> Simplex::invariantHolds() [断言]
+
+7. 表操作调用链
+   ============================================
+   
+   7.1 添加新行:
+      Simplex::newRow(LVRef x, std::unique_ptr<Polynomial> poly)
+        -> Simplex::newVar(LVRef v)
+          -> [扩展 boundsActivated 数组]
+          -> LRAModel::addVar(LVRef v)
+          -> LABoundStore::ensureReadyFor(LVRef v)
+        -> Tableau::newRow(LVRef v, std::move(poly))
+          -> Tableau::ensureTableauReadyFor(LVRef v)
+          -> Tableau::addRow(LVRef v, std::move(poly))
+          -> varTypes[getVarId(v)] = VarType::QUASIBASIC
+          -> Tableau::normalizeRow(LVRef v)
+   
+   7.2 添加非基本变量:
+      Simplex::newNonbasicVar(LVRef v)
+        -> Simplex::newVar(LVRef v)
+        -> Tableau::newNonbasicVar(LVRef v)
+          -> Tableau::ensureTableauReadyFor(LVRef v)
+          -> cols[v.x] = std::make_unique<Column>()
+          -> varTypes[getVarId(v)] = VarType::NONBASIC
+
+8. 关键算法模式总结
+   ============================================
+   
+   8.1 单纯形算法主循环模式:
+      while (true) {
+        processBufferOfActivatedBounds();
+        x = selectBasicVarToFix();  // 最短多项式或 Bland
+        if (x == Undef) {
+          saveAssignment();
+          return SAT;
+        }
+        y = findNonBasicForPivot(x);  // 启发式或 Bland
+        if (y == Undef) {
+          restoreAssignment();
+          return getConflictingBounds(x);
+        }
+        pivot(x, y);
+      }
+   
+   8.2 边界激活模式:
+      assertBound(boundRef) {
+        if (triviallyUnsatisfied) return conflict;
+        boundActivated(var);
+        if (isQuasiBasic(var)) quasiToBasic(var);
+        if (triviallySatisfied) return SAT;
+        pushBound(boundRef);
+        addToBuffer(var, boundRef);
+      }
+   
+   8.3 旋转更新模式:
+      pivot(basic, nonBasic) {
+        updateValues(basic, nonBasic);  // 更新模型值
+        tableau.pivot(basic, nonBasic);  // 更新表结构
+        eraseCandidate(basic);
+        if (noBoundsActive(nonBasic)) {
+          basicToQuasi(nonBasic);
+        } else if (outOfBounds(nonBasic)) {
+          newCandidate(nonBasic);
+        }
+      }
+   
+   8.4 值传播模式:
+      changeValueBy(var, diff) {
+        update var's value;
+        for each row containing var {
+          update row's value;
+          if (outOfBounds(row)) newCandidate(row);
+          else eraseCandidate(row);
+        }
+      }
+
+================================================================================
+算法总结
+================================================================================
+
+OpenSMT 的 Simplex 算法实现了基于单纯形法的线性实数算术求解。主要特点：
+
+1. 算法核心: Dantzig 单纯形法 + Bland 规则（避免循环）
+2. 数据结构: 稀疏表表示 + 增量模型更新
+3. 边界管理: 栈式回溯 + 边界激活机制 + Quasi-basic 延迟激活
+4. 优化策略:
+   - 最短多项式启发式选择基本变量
+   - 更独立变量优先的旋转选择
+   - 增量赋值更新（只跟踪更改的变量）
+   - Quasi-basic 变量延迟激活机制
+5. 冲突解释: Farkas 引理生成最小冲突集
+6. 正确性保证:
+   - Bland 规则保证终止
+   - 值一致性检查
+   - 表结构一致性检查
+   - 不变量验证
+
+关键设计决策：
+- 延迟处理: 边界先加入缓冲区，统一处理
+- 增量更新: 只更新受影响的变量
+- 稀疏表示: 只为基本/非基本变量分配存储
+- 双向索引: 行到列和列到行的快速查找
+
+================================================================================
+文件索引
+================================================================================
+
+核心文件:
+- opensmt/src/tsolvers/lasolver/Simplex.h/.cc - Simplex 算法实现
+- opensmt/src/tsolvers/lasolver/Tableau.h/.cc - 单纯形表数据结构
+- opensmt/src/tsolvers/lasolver/LRAModel.h/.cc - 模型和赋值管理
+- opensmt/src/tsolvers/lasolver/LABounds.h/.cc - 边界管理
+- opensmt/src/tsolvers/lasolver/LARefs.h - 引用类型定义
+- opensmt/src/tsolvers/lasolver/Delta.h/.cc - Delta 值类型
+
+辅助文件:
+- opensmt/src/common/polynomials/Polynomial.h - 多项式实现
+
+================================================================================
+结束
+================================================================================
+

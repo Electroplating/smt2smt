@@ -1,0 +1,1185 @@
+================================================================================
+OpenSMT Simplex 到 cvc5 迁移映射与计划
+================================================================================
+生成时间: 2025
+目的: 将 OpenSMT 的 Simplex 实现迁移到 cvc5 框架
+范围: Simplex 算法的核心函数、数据结构和关键算法逻辑（仅 Simplex 部分）
+来源: 基于 opensmt_simplex.log 中的 Simplex 详细分析
+
+================================================================================
+第一部分: OpenSMT Simplex 核心组件提取
+================================================================================
+
+基于 opensmt_simplex.log，OpenSMT 的 Simplex 实现包含以下核心组件：
+
+1. Simplex 类 - 单纯形算法核心实现
+   文件位置: opensmt/src/tsolvers/lasolver/Simplex.h, Simplex.cc
+
+   1.1 核心算法函数
+   ----------------------------------------------------------------------------
+   - Simplex::checkSimplex()
+     * 执行单纯形算法的主循环
+     * 返回值: Explanation (空向量表示SAT，非空向量表示UNSAT并包含冲突解释)
+     * 算法类型: Dantzig单纯形法 + Bland规则（避免循环）
+     * 关键步骤:
+       - processBufferOfActivatedBounds() - 处理待激活的边界缓冲区
+       - 主循环: 选择违反边界的基本变量，寻找非基本变量进行旋转，执行pivot
+       - 使用最短多项式启发式或Bland规则选择变量
+   
+   - Simplex::assertBound(LABoundRef boundRef)
+     * 断言一个边界约束并检查一致性
+     * 返回值: Explanation (如果存在冲突则返回解释，否则返回空)
+     * 关键操作: 检查边界冲突、激活边界、处理quasi-basic转换、加入缓冲区
+   
+   - Simplex::pivot(LVRef basic, LVRef nonBasic)
+     * 执行单纯形旋转操作，交换基本变量和非基本变量的角色
+     * 关键步骤: updateValues(), tableau.pivot(), 更新候选集合
+   
+   - Simplex::getBasicVarToFixByShortestPoly()
+     * 使用最短多项式启发式选择要修复的基本变量
+     * 选择多项式大小最小的违反边界的基本变量
+   
+   - Simplex::getBasicVarToFixByBland()
+     * 使用 Bland 规则选择要修复的基本变量
+     * 选择变量 ID 最小的违反边界的基本变量
+   
+   - Simplex::findNonBasicForPivotByHeuristic(LVRef basicVar)
+     * 使用启发式方法寻找用于旋转的非基本变量
+     * 优先选择出现在更少行中的非基本变量（更独立的变量）
+   
+   - Simplex::findNonBasicForPivotByBland(LVRef basicVar)
+     * 使用 Bland 规则寻找用于旋转的非基本变量
+     * 选择变量 ID 最小的满足条件的非基本变量
+   
+   - Simplex::updateValues(LVRef basicVar, LVRef nonBasicVar)
+     * 在旋转后更新模型中的变量值
+     * 计算nonBasicVar需要的变化量，更新其值并传播到所有受影响的基本变量
+   
+   - Simplex::changeValueBy(LVRef var, Delta const & diff)
+     * 更新变量的值并传播到所有受影响的行
+     * 更新var的值，遍历所有包含var的行，更新基本变量的值，更新候选集合
+   
+   - Simplex::getConflictingBounds(LVRef x, bool conflictOnLower)
+     * 生成冲突解释（Farkas 系数）
+     * 基于 Farkas 引理构建冲突解释
+   
+   - Simplex::processBufferOfActivatedBounds()
+     * 处理待激活边界的缓冲区
+     * 从缓冲区末尾开始处理（LIFO），对于非基本变量调整值，对于基本变量检查并加入候选
+   
+   - Simplex::quasiToBasic(LVRef it)
+     * 将 quasi-basic 变量转换为 basic 变量
+     * 更新表结构，重新计算变量的值
+   
+   - Simplex::boundActivated(LVRef v) / boundDeactivated(LVRef v)
+     * 处理边界激活/停用事件
+     * 管理边界激活计数，处理quasi-basic转换
+
+   1.2 数据结构
+   ----------------------------------------------------------------------------
+   - std::unique_ptr<LRAModel> model
+     * 管理变量的赋值和边界
+     * 存储当前赋值、上次一致赋值、边界栈、跟踪已更改变量
+   
+   - LABoundStore & boundStore
+     * 访问边界存储
+   
+   - Tableau tableau
+     * 管理单纯形表结构
+     * 存储基本变量的多项式表示、非基本变量的列索引、变量类型
+   
+   - SimplexStats simplex_stats
+     * 统计信息（Bland操作次数、旋转操作次数）
+   
+   - std::set<LVRef, LVRefComp> candidates
+     * 违反边界的候选变量集合（有序集合，只包含基本变量且违反边界）
+   
+   - std::vector<std::pair<LVRef, LABoundRef>> bufferOfActivatedBounds
+     * 待激活边界的缓冲区（LIFO顺序处理，延迟处理机制）
+   
+   - std::vector<unsigned int> boundsActivated
+     * 每个变量的激活边界计数
+   
+   - Explanation 类型
+     * using Explanation = std::vector<ExplTerm>
+     * struct ExplTerm { LABoundRef boundref; Real coeff; }
+     * 空向量表示SAT，非空向量表示UNSAT并包含冲突边界及其Farkas系数
+
+2. Tableau 类 - 单纯形表数据结构操作
+   文件位置: opensmt/src/tsolvers/lasolver/Tableau.h, Tableau.cc
+
+   2.1 核心函数
+   ----------------------------------------------------------------------------
+   - Tableau::pivot(LVRef bv, LVRef nv)
+     * 执行表旋转操作，交换基本变量和非基本变量的角色
+     * 更新变量类型、计算nv的新多项式、移动行和列结构、更新所有包含nv的行
+   
+   - Tableau::newRow(LVRef v, std::unique_ptr<Polynomial> poly)
+     * 为基本变量添加新行（初始为quasi-basic，延迟激活）
+   
+   - Tableau::normalizeRow(LVRef row)
+     * 规范化行，消除其中的quasi-basic和basic变量
+   
+   - Tableau::quasiToBasic(LVRef v) / basicToQuasi(LVRef v)
+     * 转换变量类型，更新列索引
+   
+   - Tableau::getRowPoly(LVRef basicVar)
+     * 获取基本变量的多项式表示
+   
+   - Tableau::getColumn(LVRef nonBasicVar)
+     * 获取非基本变量的列（包含该非基本变量的所有行的列表）
+   
+   - Tableau::getCoeff(LVRef basicVar, LVRef nonBasicVar)
+     * 获取基本变量多项式中非基本变量的系数
+   
+   - Tableau::getPolySize(LVRef basicVar)
+     * 获取基本变量多项式的大小（项数）
+
+   2.2 数据结构
+   ----------------------------------------------------------------------------
+   - std::vector<std::unique_ptr<column_t>> cols
+     * 非基本变量的列向量（稀疏表示，每个列包含所有包含该非基本变量的行）
+   
+   - rows_t rows (std::vector<std::unique_ptr<Polynomial>>)
+     * 基本变量的多项式表示（稀疏表示，每个多项式表示基本变量如何用非基本变量表示）
+   
+   - std::vector<VarType> varTypes
+     * 变量类型数组（NONE, BASIC, NONBASIC, QUASIBASIC）
+
+3. LRAModel 类 - 模型操作（Simplex 使用）
+   文件位置: opensmt/src/tsolvers/lasolver/LRAModel.h, LRAModel.cc
+
+   3.1 核心函数
+   ----------------------------------------------------------------------------
+   - LRAModel::read(const LVRef &v)
+     * 读取变量的当前赋值
+   
+   - LRAModel::write(const LVRef &v, Delta value)
+     * 写入变量的赋值，标记变量为已更改
+   
+   - LRAModel::pushBound(const LABoundRef br)
+     * 将边界推入边界栈
+   
+   - LRAModel::Lb(LVRef v) / Ub(LVRef v)
+     * 读取变量的下界/上界值
+   
+   - LRAModel::hasLBound(LVRef v) / hasUBound(LVRef v)
+     * 检查变量是否有下界/上界
+   
+   - LRAModel::saveAssignment() / restoreAssignment()
+     * 保存/恢复赋值状态
+
+   3.2 数据结构
+   ----------------------------------------------------------------------------
+   - std::vector<Delta> current_assignment
+     * 当前赋值（可能不一致）
+   
+   - std::vector<Delta> last_consistent_assignment
+     * 上次一致赋值（用于恢复）
+   
+   - std::vector<vec<LABoundRef>> int_lbounds / int_ubounds
+     * 每个变量的下界/上界栈（支持回溯）
+   
+   - nat_set changed_vars_set / vec<LVRef> changed_vars_vec
+     * 已更改变量的集合和向量
+
+================================================================================
+第二部分: cvc5 Simplex 对应组件
+================================================================================
+
+基于代码搜索，cvc5 的 Simplex 实现包含以下对应组件：
+
+1. SimplexDecisionProcedure 基类
+   文件位置: cvc5/src/theory/arith/linear/simplex.h, simplex.cpp
+
+   1.1 核心算法函数
+   ----------------------------------------------------------------------------
+   - SimplexDecisionProcedure::findModel(bool exactResult)
+     * 抽象方法，由子类实现
+     * 尝试更新变量赋值使其与边界一致
+     * 返回值: Result::Status (SAT/UNSAT/UNKNOWN)
+     * 对应: Simplex::checkSimplex()
+   
+   - SimplexDecisionProcedure::generateConflictForBasic(ArithVar basic)
+     * 为基本变量生成冲突
+     * 使用 FarkasConflictBuilder 构建冲突
+     * 对应: Simplex::getConflictingBounds()
+   
+   - SimplexDecisionProcedure::reportConflict(ArithVar basic)
+     * 报告冲突到输出通道
+   
+   - SimplexDecisionProcedure::maybeGenerateConflictForBasic(ArithVar basic)
+     * 检查基本变量是否有冲突，如果有则生成
+
+   1.2 数据成员
+   ----------------------------------------------------------------------------
+   - LinearEqualityModule& d_linEq
+     * 线性等式模块（提供pivotAndUpdate等方法）
+   
+   - ArithVariables& d_variables
+     * 变量管理（对应 LRAModel）
+   
+   - Tableau& d_tableau
+     * 单纯形表（共享自 LinearEqualityModule）
+   
+   - ErrorSet& d_errorSet
+     * 错误集合（对应 candidates）
+   
+   - RaiseConflict d_conflictChannel
+     * 冲突报告通道
+   
+   - FarkasConflictBuilder* d_conflictBuilder
+     * Farkas冲突构建器
+
+2. DualSimplexDecisionProcedure 类
+   文件位置: cvc5/src/theory/arith/linear/dual_simplex.h, dual_simplex.cpp
+
+   2.1 核心函数
+   ----------------------------------------------------------------------------
+   - DualSimplexDecisionProcedure::dualFindModel(bool exactResult)
+     * 对偶单纯形法的主循环
+     * 实现: 从ErrorSet获取违反边界的变量，选择非基本变量进行旋转，调用pivotAndUpdate
+     * 对应: Simplex::checkSimplex() 的主循环逻辑
+   
+   - DualSimplexDecisionProcedure::searchForFeasibleSolution(uint32_t maxIterations)
+     * 搜索可行解的主循环
+     * 对应: Simplex::checkSimplex() 的核心算法
+
+3. ErrorSet 类
+   文件位置: cvc5/src/theory/arith/linear/error_set.h, error_set.cpp
+
+   3.1 核心函数（推断）
+   ----------------------------------------------------------------------------
+   - ErrorSet::add(ArithVar var, ErrorInformation info)
+     * 添加变量到错误集
+     * 对应: Simplex::newCandidate()
+   
+   - ErrorSet::remove(ArithVar var)
+     * 从错误集移除变量
+     * 对应: Simplex::eraseCandidate()
+   
+   - ErrorSet::dequeueInconsistentBasicVariable()
+     * 从队列中取出违反边界的基本变量
+     * 对应: Simplex::getBasicVarToFixByShortestPoly() 或 getBasicVarToFixByBland()
+   
+   - ErrorSet::update()
+     * 更新错误集（移除不再违反的变量）
+     * 对应: 在pivot后更新candidates
+
+   3.2 数据结构
+   ----------------------------------------------------------------------------
+   - DenseMap<ErrorInformation> d_errorInfo
+     * 每个变量的错误信息
+   
+   - FocusSet d_focusSet
+     * 优先级队列（BinaryHeap<ArithVar, Comparator>）
+
+4. LinearEqualityModule 类
+   文件位置: cvc5/src/theory/arith/linear/linear_equality_module.h
+
+   4.1 核心函数（推断）
+   ----------------------------------------------------------------------------
+   - LinearEqualityModule::pivotAndUpdate(ArithVar basic, ArithVar nonBasic)
+     * 执行旋转并更新值
+     * 同时更新表结构和模型值
+     * 对应: Simplex::pivot() + Simplex::updateValues()
+   
+   - LinearEqualityModule::selectSlackVariable(ArithVar basic)
+     * 选择用于旋转的松弛变量（非基本变量）
+     * 对应: Simplex::findNonBasicForPivotByHeuristic() 或 findNonBasicForPivotByBland()
+
+5. Tableau 类
+   文件位置: cvc5/src/theory/arith/linear/tableau.h
+
+   5.1 核心函数（推断）
+   ----------------------------------------------------------------------------
+   - Tableau::isBasic(ArithVar v)
+     * 检查变量是否是基本变量
+   
+   - Tableau::pivot(ArithVar basic, ArithVar nonBasic)
+     * 执行表旋转（仅更新表结构，不更新值）
+   
+   - Tableau::getRow(ArithVar basic)
+     * 获取基本变量的行表示
+
+6. ArithVariables / PartialModel
+   文件位置: cvc5/src/theory/arith/linear/arithvar.h, partial_model.h
+
+   6.1 核心函数（推断）
+   ----------------------------------------------------------------------------
+   - ArithVariables::getAssignment(ArithVar v)
+     * 读取变量的当前赋值
+     * 对应: LRAModel::read()
+   
+   - PartialModel::setAssignment(ArithVar v, DeltaRational val)
+     * 设置变量的赋值
+     * 对应: LRAModel::write()
+   
+   - PartialModel::getLowerBound(ArithVar v) / getUpperBound(ArithVar v)
+     * 获取变量的下界/上界值
+     * 对应: LRAModel::Lb() / Ub()
+   
+   - PartialModel::hasLowerBound(ArithVar v) / hasUpperBound(ArithVar v)
+     * 检查变量是否有下界/上界
+     * 对应: LRAModel::hasLBound() / hasUBound()
+   
+   - PartialModel::cmpToLowerBound(ArithVar v) / cmpToUpperBound(ArithVar v)
+     * 比较变量值与边界
+     * 对应: Simplex::isModelOutOfLowerBound() / isModelOutOfUpperBound()
+
+================================================================================
+第三部分: 函数映射详细对照表
+================================================================================
+
+OpenSMT Simplex 函数                    cvc5 对应函数/位置
+-------------------------------------------------------------------------------
+核心算法
+-------------------------------------------------------------------------------
+Simplex::checkSimplex()                 DualSimplexDecisionProcedure::dualFindModel()
+                                        SimplexDecisionProcedure::findModel()
+
+Simplex::assertBound(LABoundRef)        无直接对应
+                                        -> ConstraintDatabase::addLiteral()
+                                        -> TheoryArithPrivate::assertConstraint()
+                                        （约束激活后通过ErrorSet获取违反变量）
+
+变量选择
+-------------------------------------------------------------------------------
+getBasicVarToFixByShortestPoly()        ErrorSet::dequeueInconsistentBasicVariable()
+                                        （需要自定义比较器实现最短多项式启发式）
+
+getBasicVarToFixByBland()               同上
+                                        （使用 VAR_ORDER 模式的 ErrorSelectionRule）
+
+旋转操作
+-------------------------------------------------------------------------------
+findNonBasicForPivotByHeuristic()       LinearEqualityModule::selectSlackVariable()
+                                        （内部使用启发式选择）
+
+findNonBasicForPivotByBland()           同上
+                                        （需要传入 Bland 标志或配置）
+
+pivot(basic, nonBasic)                  LinearEqualityModule::pivotAndUpdate(basic, nonBasic)
+                                        （同时更新表和值）
+
+updateValues(basic, nonBasic)           pivotAndUpdate() 内部处理
+                                        PartialModel::setAssignment()
+
+changeValueBy(var, diff)                pivotAndUpdate() 内部自动处理值传播
+
+候选集合管理
+-------------------------------------------------------------------------------
+newCandidate(var)                       ErrorSet::add(var, errorInfo)
+
+eraseCandidate(var)                     ErrorSet::remove(var)
+
+遍历 candidates                         ErrorSet::dequeueInconsistentBasicVariable()
+                                        ErrorSet::update()
+
+边界处理
+-------------------------------------------------------------------------------
+processBufferOfActivatedBounds()        无直接对应（cvc5无延迟处理机制）
+                                        -> 约束激活后立即处理
+                                        -> 通过 propagate() 机制
+
+boundActivated(v) / boundDeactivated(v) 无直接对应
+                                        -> ConstraintDatabase::activateConstraint()
+                                        -> ConstraintDatabase::deactivateConstraint()
+
+Quasi-basic 处理（cvc5不支持）
+-------------------------------------------------------------------------------
+quasiToBasic(v)                         无对应（需要移除或重新设计）
+
+basicToQuasi(v)                         无对应（需要移除或重新设计）
+
+边界检查
+-------------------------------------------------------------------------------
+isModelOutOfBounds(v)                   PartialModel::cmpToLowerBound(v) < 0 ||
+                                        PartialModel::cmpToUpperBound(v) > 0
+
+isModelOutOfUpperBound(v)               PartialModel::cmpToUpperBound(v) > 0
+
+isModelOutOfLowerBound(v)               PartialModel::cmpToLowerBound(v) < 0
+
+isModelStrictlyUnderUpperBound(v)       PartialModel::cmpToUpperBound(v) < 0
+
+isModelStrictlyOverLowerBound(v)        PartialModel::cmpToLowerBound(v) > 0
+
+冲突生成
+-------------------------------------------------------------------------------
+getConflictingBounds(x, conflictOnLower) SimplexDecisionProcedure::
+                                         generateConflictForBasic(x)
+                                         FarkasConflictBuilder::buildConflict()
+
+模型操作
+-------------------------------------------------------------------------------
+LRAModel::read(v)                       ArithVariables::getAssignment(v)
+
+LRAModel::write(v, val)                 PartialModel::setAssignment(v, val)
+
+LRAModel::Lb(v) / Ub(v)                 PartialModel::getLowerBound(v) /
+                                        PartialModel::getUpperBound(v)
+
+LRAModel::hasLBound(v) / hasUBound(v)   PartialModel::hasLowerBound(v) /
+                                        PartialModel::hasUpperBound(v)
+
+LRAModel::pushBound(br)                 无直接对应
+                                        -> ConstraintDatabase::pushBoundConstraint()
+
+LRAModel::saveAssignment() /            无对应（cvc5自动管理）
+restoreAssignment()                     -> 通过回溯机制自动恢复
+
+表操作
+-------------------------------------------------------------------------------
+Tableau::isBasic(v)                     Tableau::isBasic(v)
+
+Tableau::isNonBasic(v)                  !Tableau::isBasic(v)
+
+Tableau::isQuasiBasic(v)                无对应（cvc5不支持quasi-basic）
+
+Tableau::pivot(bv, nv)                  Tableau::pivot(bv, nv)
+                                        （仅更新表，不更新值）
+
+Tableau::getRowPoly(v)                  Tableau::getRow(v) + 遍历行项
+
+Tableau::getColumn(v)                   通过 Matrix::getColumn(v) 或遍历矩阵
+
+Tableau::getCoeff(bv, nv)               Matrix::getEntry(row, col)
+
+Tableau::getPolySize(bv)                遍历 Tableau::getRow(bv) 计算项数
+
+Tableau::quasiToBasic(v) /              无对应（需要移除）
+basicToQuasi(v)
+
+一致性检查
+-------------------------------------------------------------------------------
+valueConsistent(v)                      PartialModel::assignmentIsConsistent(v)
+                                        （或手动实现：比较赋值与多项式值）
+
+checkValueConsistency()                 遍历检查所有基本变量
+                                        （用于调试和断言）
+
+invariantHolds()                        类似的检查逻辑
+
+回溯
+-------------------------------------------------------------------------------
+pushBacktrackPoint() /                  通过 TheoryArithPrivate 的回溯框架
+popBacktrackPoint()                     自动处理
+
+finalizeBacktracking()                  无对应（cvc5自动处理）
+
+================================================================================
+第四部分: 数据结构映射详细对照表
+================================================================================
+
+OpenSMT 数据结构                         cvc5 对应结构
+-------------------------------------------------------------------------------
+核心类
+-------------------------------------------------------------------------------
+Simplex                                  SimplexDecisionProcedure
+                                         DualSimplexDecisionProcedure
+                                         （作为具体实现）
+
+Tableau                                  Tableau
+                                         （继承自 Matrix<Rational>）
+
+LRAModel                                 ArithVariables + PartialModel
+                                         （分离的变量管理和模型表示）
+
+LABoundStore                             ConstraintDatabase
+
+变量引用
+-------------------------------------------------------------------------------
+LVRef (struct { uint32_t x; })          ArithVar (typedef uint32_t)
+
+LABoundRef (struct { uint32_t x; })     ConstraintP / ConstraintCP
+                                         （指针类型）
+
+数值类型
+-------------------------------------------------------------------------------
+Delta (Real r, Real d)                  DeltaRational
+                                         （非无穷小部分 + 无穷小部分）
+
+Real                                     Rational
+
+候选/错误集合
+-------------------------------------------------------------------------------
+std::set<LVRef, LVRefComp> candidates   ErrorSet
+                                         DenseMap<ErrorInformation> d_errorInfo
+                                         FocusSet d_focusSet (优先级队列)
+
+边界缓冲区（cvc5不支持）
+-------------------------------------------------------------------------------
+bufferOfActivatedBounds                 无对应（需要移除）
+(vector<pair<LVRef, LABoundRef>>)       -> 约束激活后立即处理
+
+边界计数（cvc5不支持）
+-------------------------------------------------------------------------------
+boundsActivated                         无对应（需要移除或重新设计）
+(vector<unsigned>)                      -> cvc5无quasi-basic概念
+
+冲突解释
+-------------------------------------------------------------------------------
+Explanation                              ConstraintCPVec
+(vector<ExplTerm>)                      (vector<ConstraintCP>)
+
+ExplTerm                                约束 + Farkas系数
+{LABoundRef, Real}                      RationalVectorCP
+                                         (FarkasConflictBuilder构建)
+
+表数据结构
+-------------------------------------------------------------------------------
+Tableau::rows                            Matrix::d_rows
+(vector<unique_ptr<Polynomial>>)        (RowIndex -> 行项)
+
+Tableau::cols                            Matrix::d_cols
+(vector<unique_ptr<Column>>)            (ArithVar -> 列项)
+
+Tableau::varTypes                       无直接对应
+(vector<VarType>)                       (通过 isBasic() 判断)
+
+Polynomial                              无直接对应
+(PolynomialT<LVRef>)                    (使用 Matrix 的 Entry 表示)
+
+模型数据结构
+-------------------------------------------------------------------------------
+current_assignment                       VarInfo::d_assignment
+(vector<Delta>)                         (DeltaRational)
+
+last_consistent_assignment              无对应（cvc5自动回溯）
+(vector<Delta>)
+
+int_lbounds / int_ubounds                VarInfo::d_lowerBoundConstraint /
+(vector<vec<LABoundRef>>)               VarInfo::d_upperBoundConstraint
+                                        (单个 ConstraintP，不是栈)
+
+changed_vars_set /                      无对应（cvc5自动跟踪）
+changed_vars_vec                        或通过 ErrorSet 间接跟踪
+(nat_set / vec<LVRef>)
+
+统计信息
+-------------------------------------------------------------------------------
+SimplexStats                             Statistics 系统
+{num_bland_ops, num_pivot_ops}          (通过 StatisticsRegistry 管理)
+
+================================================================================
+第五部分: 关键算法差异与适配策略
+================================================================================
+
+1. 主循环结构差异
+-------------------------------------------------------------------------------
+OpenSMT 模式:
+  while (true) {
+    processBufferOfActivatedBounds();  // 处理待激活边界
+    x = selectBasicVarToFix();         // 最短多项式或Bland
+    if (x == Undef) return SAT;
+    y = findNonBasicForPivot(x);       // 启发式或Bland
+    if (y == Undef) return getConflictingBounds(x);
+    pivot(x, y);
+  }
+
+cvc5 模式:
+  while (!errorSet.isEmpty()) {
+    x = errorSet.dequeueInconsistentBasicVariable();
+    y = selectSlackVariable(x);        // 选择松弛变量
+    if (y == null) return reportConflict(x);
+    pivotAndUpdate(x, y);              // 转轴并更新
+    errorSet.update();                 // 更新错误集
+  }
+  return SAT;
+
+适配策略:
+  - 移除 processBufferOfActivatedBounds()，约束激活后立即处理
+  - 使用 ErrorSet 代替 candidates
+  - 使用 pivotAndUpdate() 代替分别的 pivot() 和 updateValues()
+  - 在 pivotAndUpdate() 后调用 ErrorSet::update()
+
+2. 变量选择策略差异
+-------------------------------------------------------------------------------
+OpenSMT:
+  - 默认: 最短多项式启发式（最小化多项式大小）
+  - 循环检测: Bland规则（最小变量ID）
+  - 切换条件: repeats > tableau.getNumOfCols()
+
+cvc5:
+  - 使用 ErrorSet 的优先级队列
+  - 支持多种规则（通过 ErrorSelectionRule 配置）:
+    * SUM: 基于违反程度
+    * MAX: 基于最大违反
+    * VAR_ORDER: 变量顺序（类似Bland）
+  - 自动清理队列中的无效项
+
+适配策略:
+  - 选项A: 使用 cvc5 的现有策略（VAR_ORDER 实现 Bland）
+  - 选项B: 自定义 ErrorSet 比较器实现最短多项式启发式（推荐）
+  - 需要在 ErrorSet 中配置或扩展比较器
+
+3. Quasi-basic 变量机制
+-------------------------------------------------------------------------------
+OpenSMT:
+  - 支持 quasi-basic 变量（有行但无激活边界）
+  - 延迟激活机制：边界激活时才转换为 basic
+  - 优化：减少不必要的行操作
+
+cvc5:
+  - 不支持 quasi-basic
+  - 所有基本变量始终在表中
+
+迁移策略:
+  方案1: 完全移除（简单但可能影响性能）
+    - 移除所有 quasi-basic 相关代码
+    - 所有变量直接进入表
+    - 评估性能影响
+  
+  方案2: 在 cvc5 中实现（复杂但保持性能）
+    - 需要修改 Tableau 和 LinearEqualityModule
+    - 添加 VarType::QUASIBASIC
+    - 实现 quasiToBasic() / basicToQuasi()
+    - 工作量较大，维护成本高
+  
+  推荐: 先采用方案1，如果性能关键再考虑方案2
+
+4. 边界处理机制差异
+-------------------------------------------------------------------------------
+OpenSMT:
+  - 使用 bufferOfActivatedBounds 延迟处理
+  - 在 checkSimplex() 开始时统一处理
+  - 支持边界激活计数
+
+cvc5:
+  - 约束激活后立即处理
+  - 通过 propagate() 机制传播
+  - 使用 Constraint 对象的状态管理
+
+适配策略:
+  - 移除缓冲区机制
+  - 使用 cvc5 的约束激活回调
+  - 在约束激活时直接更新 ErrorSet
+
+5. 值更新和传播差异
+-------------------------------------------------------------------------------
+OpenSMT:
+  - changeValueBy() 手动传播到所有受影响的行
+  - 需要遍历列中的每个行，更新值并更新候选集合
+
+cvc5:
+  - pivotAndUpdate() 内部自动处理值传播
+  - LinearEqualityModule 负责维护一致性
+
+适配策略:
+  - 使用 pivotAndUpdate() 代替手动的 updateValues() + changeValueBy()
+  - 依赖 cvc5 的内部机制维护一致性
+
+6. 冲突解释格式差异
+-------------------------------------------------------------------------------
+OpenSMT:
+  - Explanation = vector<ExplTerm>
+  - ExplTerm = {LABoundRef boundref, Real coeff}
+  - 直接返回 Explanation
+
+cvc5:
+  - ConstraintCPVec (约束向量)
+  - RationalVectorCP (Farkas系数向量)
+  - 通过 FarkasConflictBuilder 构建
+  - 通过 conflictChannel 报告
+
+适配策略:
+  - 使用 FarkasConflictBuilder 构建冲突
+  - 将 LABoundRef 映射到 ConstraintCP
+  - 确保 Farkas 系数正确传递
+  - 通过 conflictChannel 报告冲突
+
+7. 回溯机制差异
+-------------------------------------------------------------------------------
+OpenSMT:
+  - 手动管理: pushBacktrackPoint(), popBacktrackPoint()
+  - 需要手动保存/恢复赋值
+  - finalizeBacktracking() 清理状态
+
+cvc5:
+  - 自动回溯框架（TheoryArithPrivate）
+  - ConstraintDatabase 维护约束栈
+  - ArithVariables 维护赋值历史
+  - 自动恢复状态
+
+适配策略:
+  - 移除手动回溯代码
+  - 使用 cvc5 的回溯框架
+  - 确保在回溯回调中正确清理状态（如 ErrorSet）
+
+================================================================================
+第六部分: 代码迁移详细计划
+================================================================================
+
+阶段 1: 准备与设计 (1-2 周)
+-------------------------------------------------------------------------------
+1.1 熟悉 cvc5 的 Simplex 框架
+   - 阅读 DualSimplexDecisionProcedure 代码
+   - 阅读 ErrorSet、Tableau、PartialModel 的接口文档和实现
+   - 理解 LinearEqualityModule 的 pivotAndUpdate() 机制
+   - 理解 ConstraintDatabase 的约束管理
+   - 理解 cvc5 的回溯机制
+
+1.2 设计适配策略
+   - 确定 quasi-basic 的处理方案（建议先移除）
+   - 设计变量选择启发式的实现方式
+   - 设计冲突解释的转换逻辑
+   - 确定需要修改的 cvc5 代码范围
+
+1.3 创建测试用例
+   - 从 OpenSMT 的测试中提取关键 Simplex 测试
+   - 创建对应的 SMT-LIB 测试文件
+   - 建立回归测试套件
+   - 准备性能基准测试
+
+阶段 2: 核心算法迁移 (3-4 周)
+-------------------------------------------------------------------------------
+2.1 实现主循环（基于 DualSimplexDecisionProcedure）
+   文件: cvc5/src/theory/arith/linear/dual_simplex.cpp
+   
+   任务:
+   - 研究现有的 dualFindModel() 实现
+   - 将 OpenSMT 的 checkSimplex() 主循环逻辑迁移过来
+   - 移除 processBufferOfActivatedBounds() 相关代码
+   - 集成 ErrorSet 的变量选择
+   - 实现主循环的 Bland 规则切换逻辑
+   
+   关键函数:
+   - dualFindModel() - 主入口
+   - searchForFeasibleSolution() - 主循环实现
+
+2.2 实现变量选择启发式
+   文件: cvc5/src/theory/arith/linear/error_set.h, error_set.cpp
+   
+   任务:
+   - 如果保留最短多项式启发式：
+     * 扩展 ErrorSet 的比较器
+     * 添加 Tableau::getRowSize() 或类似方法获取多项式大小
+     * 实现基于多项式大小的比较
+   - 实现 Bland 规则（使用 VAR_ORDER 或自定义比较器）
+   - 实现切换逻辑（当重复次数超过阈值时使用 Bland）
+   
+   关键函数:
+   - ErrorSet::dequeueInconsistentBasicVariable() - 变量选择
+   - ErrorSet 的比较器类 - 实现最短多项式启发式
+
+2.3 实现旋转操作
+   文件: cvc5/src/theory/arith/linear/linear_equality_module.h
+   
+   任务:
+   - 研究现有的 pivotAndUpdate() 实现
+   - 确认是否需要修改或扩展
+   - 实现旋转后的 ErrorSet 更新逻辑
+   - 确保值的一致性维护
+   
+   关键函数:
+   - LinearEqualityModule::pivotAndUpdate()
+   - LinearEqualityModule::selectSlackVariable()
+
+2.4 实现冲突生成
+   文件: cvc5/src/theory/arith/linear/simplex.cpp
+   
+   任务:
+   - 研究现有的 generateConflictForBasic() 实现
+   - 将 OpenSMT 的 getConflictingBounds() 逻辑迁移过来
+   - 使用 FarkasConflictBuilder 构建冲突
+   - 确保 Farkas 系数正确计算
+   - 测试冲突解释的正确性
+   
+   关键函数:
+   - SimplexDecisionProcedure::generateConflictForBasic()
+   - FarkasConflictBuilder::buildConflict()
+
+阶段 3: 边界和约束处理 (2-3 周)
+-------------------------------------------------------------------------------
+3.1 移除 quasi-basic 机制
+   文件: 所有相关文件
+   
+   任务:
+   - 删除所有 quasi-basic 相关代码
+     * Simplex::quasiToBasic()
+     * Simplex::boundActivated() / boundDeactivated() 中的转换逻辑
+     * Tableau::quasiToBasic() / basicToQuasi()
+     * Tableau::isQuasiBasic()
+   - 简化边界激活逻辑
+   - 确保所有变量直接进入表
+   - 更新相关测试
+
+3.2 适配边界断言
+   文件: cvc5/src/theory/arith/linear/theory_arith_private.cpp
+   
+   任务:
+   - 移除 assertBound() 相关代码
+   - 使用 ConstraintDatabase 的约束管理
+   - 实现约束激活回调
+   - 在约束激活时更新 ErrorSet
+   - 处理边界冲突检测
+   
+   关键位置:
+   - 约束激活的回调函数
+   - ErrorSet 的更新逻辑
+
+3.3 实现边界检查
+   文件: 新建适配函数或扩展现有函数
+   
+   任务:
+   - 使用 PartialModel 的方法实现边界检查
+   - 实现 isModelOutOfBounds() 等价逻辑
+   - 确保与 OpenSMT 的语义一致
+   
+   关键函数:
+   - PartialModel::cmpToLowerBound()
+   - PartialModel::cmpToUpperBound()
+
+阶段 4: 数据结构和类型适配 (1-2 周)
+-------------------------------------------------------------------------------
+4.1 类型替换
+   任务:
+   - 将所有 LVRef 替换为 ArithVar
+   - 将所有 Delta 替换为 DeltaRational
+   - 将所有 Real 替换为 Rational
+   - 将所有 LABoundRef 替换为 ConstraintP/ConstraintCP
+   - 验证类型兼容性
+
+4.2 数据结构替换
+   任务:
+   - 将 candidates 替换为 ErrorSet
+   - 移除 bufferOfActivatedBounds
+   - 移除 boundsActivated
+   - 使用 ArithVariables/PartialModel 代替 LRAModel
+   - 使用 ConstraintDatabase 代替 LABoundStore
+
+4.3 冲突解释适配
+   任务:
+   - 将 Explanation 转换为 ConstraintCPVec
+   - 将 ExplTerm 转换为 ConstraintCP + Rational 系数
+   - 使用 FarkasConflictBuilder 构建冲突
+   - 通过 conflictChannel 报告冲突
+
+阶段 5: 测试与验证 (2-3 周)
+-------------------------------------------------------------------------------
+5.1 单元测试
+   任务:
+   - 测试每个关键函数
+   - 测试变量选择逻辑（最短多项式、Bland）
+   - 测试旋转操作
+   - 测试冲突生成
+   - 测试边界检查
+   - 验证算法正确性
+
+5.2 集成测试
+   任务:
+   - 测试完整的求解流程
+   - 测试 SAT 情况
+   - 测试 UNSAT 情况（验证冲突正确性）
+   - 测试边界约束
+   - 测试等式约束
+   - 测试严格不等式
+   - 测试回溯机制
+
+5.3 回归测试
+   任务:
+   - 运行完整的 cvc5 测试套件
+   - 运行 Simplex 相关测试
+   - 对比 OpenSMT 的结果（在相同输入上）
+   - 修复发现的 bug
+
+5.4 性能测试
+   任务:
+   - 运行性能基准测试
+   - 对比迁移前后的性能
+   - 对比 OpenSMT 和迁移后的性能
+   - 分析性能热点
+   - 优化关键路径
+
+阶段 6: 文档与清理 (1 周)
+-------------------------------------------------------------------------------
+6.1 代码注释
+   任务:
+   - 添加详细的函数注释
+   - 说明算法逻辑
+   - 标注关键设计决策
+   - 说明与 OpenSMT 的差异
+
+6.2 文档更新
+   任务:
+   - 更新设计文档
+   - 记录迁移过程
+   - 说明与 OpenSMT 的差异
+   - 更新 API 文档
+
+6.3 代码审查准备
+   任务:
+   - 清理冗余代码
+   - 统一代码风格（遵循 cvc5 风格）
+   - 修复编译警告
+   - 准备代码审查
+
+================================================================================
+第七部分: 关键迁移决策点
+================================================================================
+
+1. Quasi-basic 机制处理
+-------------------------------------------------------------------------------
+决策: 是否保留 quasi-basic 功能？
+
+选项A: 完全移除（推荐第一阶段采用）
+  优点:
+    - 简单直接，无需修改 cvc5 核心
+    - 减少迁移复杂度
+    - 降低维护成本
+  
+  缺点:
+    - 可能影响性能（需要评估）
+    - 失去了 OpenSMT 的一个优化
+  
+  评估方法:
+    - 实现移除版本
+    - 性能测试对比
+    - 如果性能影响可接受，采用此方案
+
+选项B: 在 cvc5 中实现
+  优点:
+    - 保持 OpenSMT 的性能特性
+    - 完整的功能迁移
+  
+  缺点:
+    - 需要大量修改 cvc5 核心代码
+    - Tableau 需要支持 QUASIBASIC 类型
+    - LinearEqualityModule 需要支持转换
+    - 维护成本高
+  
+  工作量评估:
+    - 需要修改 5-10 个核心文件
+    - 增加 500-1000 行代码
+    - 需要额外的测试
+
+建议: 先采用选项A，如果性能测试显示显著影响，再考虑选项B
+
+2. 变量选择策略
+-------------------------------------------------------------------------------
+决策: 如何实现最短多项式启发式？
+
+选项A: 仅使用 cvc5 现有策略
+  优点:
+    - 简单，无需修改
+    - 使用 VAR_ORDER 实现 Bland 规则
+  
+  缺点:
+    - 可能丢失 OpenSMT 的启发式优势
+
+选项B: 自定义 ErrorSet 比较器（推荐）
+  优点:
+    - 保持 OpenSMT 的性能特性
+    - 可以实现最短多项式启发式
+  
+  缺点:
+    - 需要扩展 ErrorSet
+    - 需要 Tableau 提供多项式大小信息
+  
+  实现方式:
+    - 扩展 ErrorSet 的比较器接口
+    - 在 Tableau 中添加 getRowSize() 方法
+    - 实现基于多项式大小的比较逻辑
+
+建议: 采用选项B，实现最短多项式启发式
+
+3. 冲突解释格式
+-------------------------------------------------------------------------------
+决策: 如何转换冲突解释？
+
+方法:
+  1. 使用 FarkasConflictBuilder 构建冲突
+  2. 将 LABoundRef 映射到 ConstraintCP
+  3. 确保 Farkas 系数正确计算和传递
+  4. 通过 conflictChannel 报告冲突
+
+关键点:
+  - Farkas 系数的计算必须与 OpenSMT 一致
+  - 需要验证冲突解释的正确性
+  - 测试冲突解释的可满足性
+
+4. 边界处理时机
+-------------------------------------------------------------------------------
+决策: 如何处理边界激活？
+
+选项: 移除延迟处理机制
+  - 约束激活后立即处理
+  - 使用 cvc5 的 propagate() 机制
+  - 在约束激活回调中更新 ErrorSet
+
+影响:
+  - 简化代码逻辑
+  - 可能略微影响性能（需要评估）
+  - 与 cvc5 的设计一致
+
+================================================================================
+第八部分: 潜在问题与解决方案
+================================================================================
+
+1. API 不匹配
+-------------------------------------------------------------------------------
+问题: OpenSMT 和 cvc5 的接口差异较大
+
+解决方案:
+  - 创建适配函数封装 cvc5 的接口（临时方案）
+  - 逐步重构，减少适配层
+  - 直接使用 cvc5 的接口（推荐）
+
+2. 数值类型差异
+-------------------------------------------------------------------------------
+问题: Delta vs DeltaRational, Real vs Rational
+
+解决方案:
+  - 大多数操作兼容，直接替换
+  - 注意边界情况（如无穷小处理）
+  - 编写转换测试验证正确性
+  - 特别注意严格不等式的处理
+
+3. 回溯机制差异
+-------------------------------------------------------------------------------
+问题: OpenSMT 手动管理，cvc5 自动处理
+
+解决方案:
+  - 使用 cvc5 的回溯框架
+  - 移除手动回溯代码
+  - 在回溯回调中正确清理状态（如 ErrorSet）
+  - 测试回溯的正确性
+
+4. Quasi-basic 缺失
+-------------------------------------------------------------------------------
+问题: cvc5 不支持 quasi-basic
+
+解决方案:
+  - 先采用移除方案
+  - 评估性能影响
+  - 如必要，考虑实现（工作量大）
+
+5. 测试与验证
+-------------------------------------------------------------------------------
+问题: 如何验证迁移的正确性？
+
+解决方案:
+  - 对比 OpenSMT 和 cvc5 在相同输入上的结果
+  - 使用 SMT-COMP 基准测试
+  - 逐步迁移，每个阶段都验证
+  - 创建专门的回归测试套件
+
+6. 性能回归
+-------------------------------------------------------------------------------
+问题: 迁移后可能出现性能下降
+
+解决方案:
+  - 进行详细的性能基准测试
+  - 对比迁移前后的性能
+  - 分析性能热点
+  - 优化关键路径
+  - 如果移除 quasi-basic，评估性能影响
+
+================================================================================
+第九部分: 迁移检查清单
+================================================================================
+
+功能完整性
+-------------------------------------------------------------------------------
+[ ] 主求解循环正确实现
+[ ] 变量选择（最短多项式 + Bland）正确
+[ ] 旋转选择（启发式 + Bland）正确
+[ ] 旋转操作正确更新表和值
+[ ] 冲突生成正确（Farkas 系数）
+[ ] 边界检查逻辑正确
+[ ] 值一致性检查正确
+[ ] 边界断言处理正确
+[ ] 约束激活回调正确
+[ ] 回溯机制正确
+
+数据结构迁移
+-------------------------------------------------------------------------------
+[ ] 所有 LVRef 替换为 ArithVar
+[ ] 所有 Delta 替换为 DeltaRational
+[ ] 所有 Real 替换为 Rational
+[ ] 所有 LABoundRef 替换为 ConstraintP/ConstraintCP
+[ ] candidates 替换为 ErrorSet
+[ ] 移除 bufferOfActivatedBounds
+[ ] 移除 boundsActivated
+[ ] 移除所有 quasi-basic 相关代码（如采用移除方案）
+[ ] 模型操作使用 ArithVariables/PartialModel
+[ ] 边界管理使用 ConstraintDatabase
+
+集成测试
+-------------------------------------------------------------------------------
+[ ] 基本求解功能测试通过
+[ ] SAT 情况测试通过
+[ ] UNSAT 情况测试通过（冲突正确）
+[ ] 边界约束测试通过
+[ ] 等式约束测试通过
+[ ] 严格不等式测试通过
+[ ] 回溯测试通过
+[ ] 大型问题测试通过
+[ ] 与 OpenSMT 结果对比一致
+
+性能验证
+-------------------------------------------------------------------------------
+[ ] 性能基准测试通过
+[ ] 内存使用合理
+[ ] 无性能回归（与 OpenSMT 对比，考虑 quasi-basic 移除的影响）
+[ ] 性能热点已优化
+
+代码质量
+-------------------------------------------------------------------------------
+[ ] 代码通过 cvc5 的代码风格检查
+[ ] 所有函数有适当注释
+[ ] 无未使用的代码
+[ ] 无编译警告
+[ ] 通过代码审查
+[ ] 文档已更新
+
+================================================================================
+第十部分: 参考资源
+================================================================================
+
+OpenSMT 代码位置
+-------------------------------------------------------------------------------
+- Simplex 类: opensmt/src/tsolvers/lasolver/Simplex.h, Simplex.cc
+- Tableau 类: opensmt/src/tsolvers/lasolver/Tableau.h, Tableau.cc
+- LRAModel 类: opensmt/src/tsolvers/lasolver/LRAModel.h, LRAModel.cc
+- LABoundStore: opensmt/src/tsolvers/lasolver/LABounds.h
+- Delta 类: opensmt/src/tsolvers/lasolver/Delta.h, Delta.cc
+- 详细分析: opensmt_simplex.log
+
+cvc5 代码位置
+-------------------------------------------------------------------------------
+- SimplexDecisionProcedure: cvc5/src/theory/arith/linear/simplex.h, simplex.cpp
+- DualSimplexDecisionProcedure: cvc5/src/theory/arith/linear/dual_simplex.h, dual_simplex.cpp
+- ErrorSet: cvc5/src/theory/arith/linear/error_set.h, error_set.cpp
+- Tableau: cvc5/src/theory/arith/linear/tableau.h
+- LinearEqualityModule: cvc5/src/theory/arith/linear/linear_equality_module.h
+- ArithVariables: cvc5/src/theory/arith/linear/arithvar.h
+- PartialModel: cvc5/src/theory/arith/linear/partial_model.h
+- ConstraintDatabase: cvc5/src/theory/arith/linear/constraint.h
+
+相关文档
+-------------------------------------------------------------------------------
+- Simplex for DPLL(T) 技术报告
+- cvc5 理论求解器文档
+- OpenSMT 文档
+
+================================================================================
+结束
+================================================================================
+
+注意事项:
+1. 本迁移计划基于当前对 OpenSMT 和 cvc5 代码的理解
+2. 实际迁移过程中可能需要根据实际情况调整
+3. 建议分阶段迁移，每个阶段都要充分测试
+4. 与 cvc5 开发团队保持沟通，确保迁移方向正确
+5. 保留 OpenSMT 的测试用例，用于验证迁移的正确性
+6. 重点关注 Simplex 核心算法，其他功能（如 quasi-basic）可以简化或移除
+7. 性能测试是关键，需要充分评估迁移对性能的影响
+
+建议的迁移顺序:
+1. 先实现核心算法（主循环、旋转、冲突生成）
+2. 再处理边界和约束（移除 quasi-basic，适配边界处理）
+3. 最后优化和测试（变量选择启发式，性能优化）
+
+预估总工作量: 10-12 周（包括测试和文档）

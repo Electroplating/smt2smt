@@ -7,3 +7,9 @@ I now need to transfer these parts from opensmt to cvc5, please generate @opensm
 
 Do code migration on the LRA solving theory from opensmt@opensmt to cvc5@cvc5 based on @opensmt_to_cvc5.log .
 Keep a code migration log@code_migration_1.log of the migration details for future debugging.
+
+Please analyze the Simplex algorithm for solving LRA in opensmt solver@opensmt @opensmt_algorithm.log . 
+Specify the algorithms and data structures used in the Simplex algorithm, generate a @opensmt_simplex.log including three parts: critical functions, data structures and function call relations.
+The file should be as detailed as possible for future code migration work.
+
+I now need to transfer only the Simplex parts @opensmt_simplex.log  from opensmt to cvc5, please generate @simplex_opensmt_to_cvc5.log including the corresponding functions and data structures in opensmt@opensmt  and cvc5@cvc5  , and a plan for future code migration.
