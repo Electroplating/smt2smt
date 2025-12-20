@@ -885,19 +885,14 @@ bool TheoryEngine::solve(TrustNode tliteral,
     throw LogicException(ss.str());
   }
 
-  // OpenSMT Migration: Optimize for LRA boundary constraints
+  // OpenSMT Migration: Note on LRA boundary constraints
   // According to analyze1.log, many TheoryEngine::solve calls return 0 (false)
   // for simple boundary constraints, causing inefficient exploration.
-  // This optimization provides a fast path for simple boundary constraints
-  // similar to OpenSMT's assertLit behavior which handles simple cases early.
-  if (tid == THEORY_ARITH)
-  {
-    // Check if this is a simple boundary constraint (e.g., x >= 0, x <= 1)
-    // Simple boundary constraints can be processed more efficiently
-    // by directly checking for early conflicts in ppAssert
-    // The ppAssert method has been enhanced to detect conflicts early
-    // (see TheoryArithPrivate::ppAssert improvements)
-  }
+  // Future optimization: Consider implementing early conflict detection
+  // in constraintFromFactQueue or assertionCases, where constraints are
+  // fully set up, rather than in ppAssert (which is too early in the pipeline).
+  // This would provide a fast path for simple boundary constraints similar to
+  // OpenSMT's assertLit behavior, but without compromising correctness.
 
   bool solveStatus = d_theoryTable[tid]->ppAssert(tliteral, substitutionOut);
   Trace("theory::solve") << "TheoryEngine::solve(" << literal << ") => " << solveStatus << endl;

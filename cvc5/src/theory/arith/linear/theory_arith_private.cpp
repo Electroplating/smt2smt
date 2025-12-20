@@ -1037,36 +1037,6 @@ bool TheoryArithPrivate::ppAssert(TrustNode tin,
       {
         d_learner.addBound(in);
       }
-      // OpenSMT Migration: Early conflict detection for simple boundary constraints
-      // Check if constraint is already in database and has negation proven
-      {
-        ConstraintP constraint = d_constraintDatabase.lookup(in);
-        if (constraint != NullConstraint && constraint->negationHasProof())
-        {
-          // Early conflict detected - negation already proven
-          Trace("arith::ppAssert") << "TheoryArithPrivate::ppAssert: early conflict detected for " << in << endl;
-          ConstraintP negation = constraint->getNegation();
-          if (!constraint->assertedToTheTheory())
-          {
-            constraint->setAssertedToTheTheory(in, true);
-            if (!constraint->hasProof())
-            {
-              constraint->setAssumption(true);
-            }
-          }
-          raiseConflict(negation, InferenceId::ARITH_CONF_FACT_QUEUE);
-          return false; // Conflict raised, but return false as we didn't create substitution
-        }
-        // For simple boundary constraints, try to check immediate contradiction
-        // This mimics OpenSMT's assertLit behavior which checks conflicts early
-        if (constraint != NullConstraint && !constraint->assertedToTheTheory())
-        {
-          // Pre-check: if this is a simple boundary constraint, we can check
-          // if it contradicts existing bounds more efficiently
-          // This optimization helps avoid unnecessary TheoryEngine::solve calls
-          // that return 0 (as noted in analyze1.log)
-        }
-      }
       break;
     default:
       // Do nothing
@@ -1615,6 +1585,15 @@ bool TheoryArithPrivate::assertionCases(ConstraintP constraint){
 
   switch(constraint->getType()){
   case UpperBound:
+    // OpenSMT Migration: Early check for already-satisfied constraints
+    // If the constraint is already satisfied by the current model, we can
+    // skip further processing. This optimization mimics OpenSMT's assertLit
+    // behavior which checks if constraints are trivially satisfied.
+    if(d_partialModel.greaterThanUpperBound(x_i, constraint->getValue())){
+      // Constraint is already satisfied, no need to process further
+      Trace("arith::assert") << "AssertUpper: constraint already satisfied for " << x_i << std::endl;
+      return false; // sat
+    }
     if(isInteger(x_i) && constraint->isStrictUpperBound()){
       ConstraintP floorConstraint = constraint->getFloor();
       if(!floorConstraint->isTrue()){
@@ -1635,6 +1614,15 @@ bool TheoryArithPrivate::assertionCases(ConstraintP constraint){
       return AssertUpper(constraint);
     }
   case LowerBound:
+    // OpenSMT Migration: Early check for already-satisfied constraints
+    // If the constraint is already satisfied by the current model, we can
+    // skip further processing. This optimization mimics OpenSMT's assertLit
+    // behavior which checks if constraints are trivially satisfied.
+    if(d_partialModel.lessThanLowerBound(x_i, constraint->getValue())){
+      // Constraint is already satisfied, no need to process further
+      Trace("arith::assert") << "AssertLower: constraint already satisfied for " << x_i << std::endl;
+      return false; // sat
+    }
     if(isInteger(x_i) && constraint->isStrictLowerBound()){
       ConstraintP ceilingConstraint = constraint->getCeiling();
       if(!ceilingConstraint->isTrue()){
