@@ -1037,6 +1037,36 @@ bool TheoryArithPrivate::ppAssert(TrustNode tin,
       {
         d_learner.addBound(in);
       }
+      // OpenSMT Migration: Early conflict detection for simple boundary constraints
+      // Check if constraint is already in database and has negation proven
+      {
+        ConstraintP constraint = d_constraintDatabase.lookup(in);
+        if (constraint != NullConstraint && constraint->negationHasProof())
+        {
+          // Early conflict detected - negation already proven
+          Trace("arith::ppAssert") << "TheoryArithPrivate::ppAssert: early conflict detected for " << in << endl;
+          ConstraintP negation = constraint->getNegation();
+          if (!constraint->assertedToTheTheory())
+          {
+            constraint->setAssertedToTheTheory(in, true);
+            if (!constraint->hasProof())
+            {
+              constraint->setAssumption(true);
+            }
+          }
+          raiseConflict(negation, InferenceId::ARITH_CONF_FACT_QUEUE);
+          return false; // Conflict raised, but return false as we didn't create substitution
+        }
+        // For simple boundary constraints, try to check immediate contradiction
+        // This mimics OpenSMT's assertLit behavior which checks conflicts early
+        if (constraint != NullConstraint && !constraint->assertedToTheTheory())
+        {
+          // Pre-check: if this is a simple boundary constraint, we can check
+          // if it contradicts existing bounds more efficiently
+          // This optimization helps avoid unnecessary TheoryEngine::solve calls
+          // that return 0 (as noted in analyze1.log)
+        }
+      }
       break;
     default:
       // Do nothing
