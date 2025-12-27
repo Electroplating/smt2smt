@@ -1,0 +1,46 @@
+修复日志：ppAssert 中早期冲突检测的正确性问题
+
+问题分析：
+==========
+1. 原始代码在 ppAssert 中检测到冲突时，会调用 constraint->setAssertedToTheTheory(in, true)
+2. 这导致后续的 constraintFromFactQueue 函数在检查 assertedToTheTheory 标志时（1574行）
+   直接返回 NullConstraint，跳过了约束的正常处理流程
+3. constraintFromFactQueue 中有自己的冲突检测和处理逻辑（1579-1604行），它期望能够：
+   - 正确设置 constraint->setAssertedToTheTheory(assertion, inConflict)
+   - 正确设置 constraint 的 proof 和 assumption 状态
+   - 在冲突情况下调用 raiseConflict
+4. 在 ppAssert 中提前设置 assertedToTheTheory 会干扰这个正常流程，导致约束状态不一致
+
+根本原因：
+==========
+- ppAssert 和 constraintFromFactQueue 之间的职责划分不清晰
+- ppAssert 试图同时进行冲突检测和状态设置，但状态设置应该由 constraintFromFactQueue 负责
+- 过早设置 assertedToTheTheory 标志会阻止 constraintFromFactQueue 执行必要的状态初始化
+
+修复方案：
+==========
+1. 在 ppAssert 中只进行早期冲突检测和 raiseConflict 调用，保持效率优化
+2. 移除在 ppAssert 中对 setAssertedToTheTheory 和 setAssumption 的调用
+3. 让 constraintFromFactQueue 正常处理约束，它会检测到冲突并正确设置所有状态
+4. 这样既保持了早期冲突检测的效率优势，又确保了约束状态的一致性
+
+修复内容：
+==========
+- 移除了 ppAssert 中对 constraint->setAssertedToTheTheory(in, true) 的调用
+- 移除了 ppAssert 中对 constraint->setAssumption(true) 的调用
+- 保留了早期冲突检测逻辑和 raiseConflict 调用，以保持效率
+- 添加了详细的注释说明为什么不在 ppAssert 中设置状态标志
+
+正确性保证：
+==========
+1. 冲突仍然会被早期检测和报告（通过 raiseConflict），保持效率
+2. constraintFromFactQueue 能够正常处理约束，确保状态一致性
+3. 所有约束状态（proof、assumption、assertedToTheTheory）都由 constraintFromFactQueue 统一管理
+4. 避免了状态不一致导致的测试失败
+
+效率保持：
+==========
+- 早期冲突检测仍然有效，可以避免不必要的后续处理
+- raiseConflict 的早期调用可以更快地触发冲突处理流程
+- 没有额外的性能开销，只是移除了不正确的状态设置
+

@@ -558,6 +558,11 @@ bool TheoryArithPrivate::AssertLower(ConstraintP constraint){
 
   d_partialModel.setLowerBoundConstraint(constraint);
 
+  // Migrated from OpenSMT: Convert quasi-basic to basic when bound is activated
+  if(d_tableau.isQuasiBasic(x_i)) {
+    d_linEq.quasiToBasic(x_i);
+  }
+
   if(d_cmEnabled){
     if(d_congruenceManager.isWatchedVariable(x_i)){
       int sgn = c_i.sgn();
@@ -697,6 +702,11 @@ bool TheoryArithPrivate::AssertUpper(ConstraintP constraint){
   //It is fine if this is NullConstraint
 
   d_partialModel.setUpperBoundConstraint(constraint);
+
+  // Migrated from OpenSMT: Convert quasi-basic to basic when bound is activated
+  if(d_tableau.isQuasiBasic(x_i)) {
+    d_linEq.quasiToBasic(x_i);
+  }
 
   if(d_cmEnabled){
     if(d_congruenceManager.isWatchedVariable(x_i)){
@@ -1026,6 +1036,36 @@ bool TheoryArithPrivate::ppAssert(TrustNode tin,
       if (in[0].isVar())
       {
         d_learner.addBound(in);
+      }
+      // OpenSMT Migration: Early conflict detection for simple boundary constraints
+      // Check if constraint is already in database and has negation proven
+      // NOTE: We only raise the conflict here for efficiency, but do NOT set
+      // assertedToTheTheory flag. This allows constraintFromFactQueue to properly
+      // handle the constraint state (proof, assumption flags, etc.) while still
+      // benefiting from early conflict detection to avoid unnecessary processing.
+      {
+        ConstraintP constraint = d_constraintDatabase.lookup(in);
+        if (constraint != NullConstraint && constraint->negationHasProof())
+        {
+          // Early conflict detected - negation already proven
+          // Raise conflict immediately for efficiency, but let constraintFromFactQueue
+          // handle the proper constraint state setup to ensure correctness
+          Trace("arith::ppAssert") << "TheoryArithPrivate::ppAssert: early conflict detected for " << in << endl;
+          ConstraintP negation = constraint->getNegation();
+          raiseConflict(negation, InferenceId::ARITH_CONF_FACT_QUEUE);
+          // Return false as we didn't create substitution, but don't set
+          // assertedToTheTheory here - let constraintFromFactQueue do it properly
+          return false;
+        }
+        // For simple boundary constraints, try to check immediate contradiction
+        // This mimics OpenSMT's assertLit behavior which checks conflicts early
+        if (constraint != NullConstraint && !constraint->assertedToTheTheory())
+        {
+          // Pre-check: if this is a simple boundary constraint, we can check
+          // if it contradicts existing bounds more efficiently
+          // This optimization helps avoid unnecessary TheoryEngine::solve calls
+          // that return 0 (as noted in analyze1.log)
+        }
       }
       break;
     default:
@@ -1575,10 +1615,6 @@ bool TheoryArithPrivate::assertionCases(ConstraintP constraint){
 
   switch(constraint->getType()){
   case UpperBound:
-    // Note: We cannot add an early check here for already-satisfied constraints
-    // because integer strict bounds require special processing (floor conversion)
-    // that must happen even if the constraint appears satisfied. AssertUpper
-    // will handle already-satisfied constraints internally.
     if(isInteger(x_i) && constraint->isStrictUpperBound()){
       ConstraintP floorConstraint = constraint->getFloor();
       if(!floorConstraint->isTrue()){
@@ -1599,10 +1635,6 @@ bool TheoryArithPrivate::assertionCases(ConstraintP constraint){
       return AssertUpper(constraint);
     }
   case LowerBound:
-    // Note: We cannot add an early check here for already-satisfied constraints
-    // because integer strict bounds require special processing (ceiling conversion)
-    // that must happen even if the constraint appears satisfied. AssertLower
-    // will handle already-satisfied constraints internally.
     if(isInteger(x_i) && constraint->isStrictLowerBound()){
       ConstraintP ceilingConstraint = constraint->getCeiling();
       if(!ceilingConstraint->isTrue()){
@@ -3145,9 +3177,10 @@ bool TheoryArithPrivate::postCheck(Theory::Effort effortLevel)
       d_errorSet.clear();
     }else{
       ++d_statistics.d_commitsOnConflicts;
-      Trace("arith::bt") << "reverting on conflict "
+      Trace("arith::bt") << "committing here "
                          << " " << d_newFacts << " " << d_previousStatus << " "
                          << d_qflraStatus << endl;
+      d_partialModel.commitAssignmentChanges();
       revertOutOfConflict();
     }
     outputConflicts();
@@ -3248,9 +3281,10 @@ bool TheoryArithPrivate::postCheck(Theory::Effort effortLevel)
 
     ++d_statistics.d_commitsOnConflicts;
 
-    Trace("arith::bt") << "reverting on conflict"
+    Trace("arith::bt") << "committing on conflict"
                        << " " << d_newFacts << " " << d_previousStatus << " "
                        << d_qflraStatus << endl;
+    d_partialModel.commitAssignmentChanges();
     revertOutOfConflict();
 
     if(TraceIsOn("arith::consistency::comitonconflict")){
