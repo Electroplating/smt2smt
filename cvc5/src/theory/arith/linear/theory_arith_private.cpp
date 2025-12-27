@@ -1585,15 +1585,10 @@ bool TheoryArithPrivate::assertionCases(ConstraintP constraint){
 
   switch(constraint->getType()){
   case UpperBound:
-    // OpenSMT Migration: Early check for already-satisfied constraints
-    // If the constraint is already satisfied by the current model, we can
-    // skip further processing. This optimization mimics OpenSMT's assertLit
-    // behavior which checks if constraints are trivially satisfied.
-    if(d_partialModel.greaterThanUpperBound(x_i, constraint->getValue())){
-      // Constraint is already satisfied, no need to process further
-      Trace("arith::assert") << "AssertUpper: constraint already satisfied for " << x_i << std::endl;
-      return false; // sat
-    }
+    // Note: We cannot add an early check here for already-satisfied constraints
+    // because integer strict bounds require special processing (floor conversion)
+    // that must happen even if the constraint appears satisfied. AssertUpper
+    // will handle already-satisfied constraints internally.
     if(isInteger(x_i) && constraint->isStrictUpperBound()){
       ConstraintP floorConstraint = constraint->getFloor();
       if(!floorConstraint->isTrue()){
@@ -1614,15 +1609,10 @@ bool TheoryArithPrivate::assertionCases(ConstraintP constraint){
       return AssertUpper(constraint);
     }
   case LowerBound:
-    // OpenSMT Migration: Early check for already-satisfied constraints
-    // If the constraint is already satisfied by the current model, we can
-    // skip further processing. This optimization mimics OpenSMT's assertLit
-    // behavior which checks if constraints are trivially satisfied.
-    if(d_partialModel.lessThanLowerBound(x_i, constraint->getValue())){
-      // Constraint is already satisfied, no need to process further
-      Trace("arith::assert") << "AssertLower: constraint already satisfied for " << x_i << std::endl;
-      return false; // sat
-    }
+    // Note: We cannot add an early check here for already-satisfied constraints
+    // because integer strict bounds require special processing (ceiling conversion)
+    // that must happen even if the constraint appears satisfied. AssertLower
+    // will handle already-satisfied constraints internally.
     if(isInteger(x_i) && constraint->isStrictLowerBound()){
       ConstraintP ceilingConstraint = constraint->getCeiling();
       if(!ceilingConstraint->isTrue()){
