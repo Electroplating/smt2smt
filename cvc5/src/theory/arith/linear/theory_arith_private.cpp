@@ -3145,10 +3145,9 @@ bool TheoryArithPrivate::postCheck(Theory::Effort effortLevel)
       d_errorSet.clear();
     }else{
       ++d_statistics.d_commitsOnConflicts;
-      Trace("arith::bt") << "committing here "
+      Trace("arith::bt") << "reverting on conflict "
                          << " " << d_newFacts << " " << d_previousStatus << " "
                          << d_qflraStatus << endl;
-      d_partialModel.commitAssignmentChanges();
       revertOutOfConflict();
     }
     outputConflicts();
@@ -3249,10 +3248,9 @@ bool TheoryArithPrivate::postCheck(Theory::Effort effortLevel)
 
     ++d_statistics.d_commitsOnConflicts;
 
-    Trace("arith::bt") << "committing on conflict"
+    Trace("arith::bt") << "reverting on conflict"
                        << " " << d_newFacts << " " << d_previousStatus << " "
                        << d_qflraStatus << endl;
-    d_partialModel.commitAssignmentChanges();
     revertOutOfConflict();
 
     if(TraceIsOn("arith::consistency::comitonconflict")){

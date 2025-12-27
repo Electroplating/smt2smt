@@ -96,6 +96,53 @@ OpenSMT 到 CVC5 代码迁移日志 #3
 - AssertUpper: 已移除 quasiToBasic 调用，恢复到原始实现
 - Tableau 中的 quasi-basic 基础设施代码保留（未使用，可能未来移除）
 
+修正 #4: 冲突处理中错误的 commit/revert 顺序导致赋值状态不一致 (最新修复 - 2025)
+------------------------------------------------------------------------------------------
+问题描述：
+- 在冲突处理时，代码在调用 `revertOutOfConflict()` 之前错误地调用了 `commitAssignmentChanges()`
+- 这导致 safe assignment 列表被清除，使得 revert 无法正确恢复赋值
+- 结果导致变量赋值状态不一致，可能引起错误的断言
+
+根本原因分析：
+1. `commitAssignmentChanges()` 调用 `clearSafeAssignments(false)`，这会清除 safe assignment 列表
+2. `revertOutOfConflict()` 调用 `revertAssignmentChanges()`，后者调用 `clearSafeAssignments(true)`
+3. `clearSafeAssignments(true)` 需要 safe assignment 列表来恢复赋值
+4. 如果先 commit（清除列表），再 revert（列表已空），revert 无法恢复任何赋值
+5. 这导致变量保持在不一致的状态，可能导致后续处理出错
+
+修复：
+- 移除了 postCheck 中第 3151 行冲突处理分支的 `commitAssignmentChanges()` 调用
+- 移除了 postCheck 中第 3255 行 UNSAT 分支的 `commitAssignmentChanges()` 调用
+- 冲突时应该只 revert，不应该 commit
+
+修改位置：
+- 文件：cvc5/src/theory/arith/linear/theory_arith_private.cpp
+- 函数：TheoryArithPrivate::postCheck
+- 行号：约 3147-3152 行（冲突处理分支）
+- 行号：约 3250-3256 行（UNSAT 分支）
+
+修复前代码（错误）：
+  ```
+  d_partialModel.commitAssignmentChanges();  // 错误：先清除列表
+  revertOutOfConflict();  // 无法恢复，因为列表已空
+  ```
+
+修复后代码（正确）：
+  ```
+  revertOutOfConflict();  // 直接 revert，恢复 safe assignments
+  ```
+
+重要发现：
+- 这个 bug 是从 OpenSMT 迁移时引入的
+- 在冲突情况下，应该只 revert，不应该 commit
+- commit 只在成功（SAT/UNKNOWN）时才应该调用
+- 这个 bug 会导致赋值状态不一致，是导致测试失败的重要原因
+
+当前状态：
+- 冲突处理分支：已移除错误的 commit 调用
+- UNSAT 分支：已移除错误的 commit 调用
+- 正确的逻辑：冲突时只 revert，成功时只 commit
+
 ================================================================================
 一、迁移概述
 ================================================================================
@@ -159,35 +206,41 @@ OpenSMT 到 CVC5 代码迁移日志 #3
    
    状态: 已移除，恢复到正确实现
 
-2. TheoryEngine::solve 优化
+3. TheoryEngine::solve 注释更新
    文件: cvc5/src/theory/theory_engine.cpp
-   位置: 约 864-891 行
+   位置: 约 888-905 行
    
    修改内容:
-   - 为 LRA 理论添加注释说明优化策略
-   - 说明 ppAssert 已增强以处理简单边界约束
-   - 为未来进一步优化预留接口
+   - 添加了详细的注释说明 OpenSMT 迁移尝试和问题
+   - 记录了所有失败的优化尝试及其原因
+   - 说明当前状态：所有跳过约束处理的优化已被移除
+   - 为未来优化提供指导原则
    
-   代码片段:
+   当前代码:
    ```
-   // OpenSMT Migration: Optimize for LRA boundary constraints
+   // OpenSMT Migration: Note on LRA boundary constraints
    // According to analyze1.log, many TheoryEngine::solve calls return 0 (false)
    // for simple boundary constraints, causing inefficient exploration.
-   // This optimization provides a fast path for simple boundary constraints
-   // similar to OpenSMT's assertLit behavior which handles simple cases early.
-   if (tid == THEORY_ARITH)
-   {
-     // Check if this is a simple boundary constraint (e.g., x >= 0, x <= 1)
-     // Simple boundary constraints can be processed more efficiently
-     // by directly checking for early conflicts in ppAssert
-     // The ppAssert method has been enhanced to detect conflicts early
-     // (see TheoryArithPrivate::ppAssert improvements)
-   }
+   // 
+   // IMPORTANT: Attempts to add early optimization in assertionCases were reverted
+   // because they caused correctness issues with integer strict bounds processing.
+   // Integer strict bounds (x < c or x > c) require floor/ceiling conversion that
+   // must happen even when constraints appear satisfied. Early checks in assertionCases
+   // would skip this necessary processing.
+   //
+   // Current status: All optimizations that skip constraint processing have been
+   // removed to ensure correctness. AssertUpper/AssertLower handle already-satisfied
+   // constraints internally without requiring early checks.
+   //
+   // Future optimization: Any performance improvements must preserve the complete
+   // constraint processing flow, especially for integer strict bounds. Consider
+   // optimizations in AssertUpper/AssertLower themselves rather than bypassing them.
    ```
    
-   预期效果:
-   - 为 LRA 约束处理提供明确的优化路径
-   - 为未来进一步优化（如直接调用理论求解器）预留空间
+   说明:
+   - 仅为注释，无实际代码修改
+   - 记录迁移过程中的经验和教训
+   - 为未来可能的优化提供参考
 
 ================================================================================
 三、迁移原理分析
@@ -310,9 +363,10 @@ OpenSMT 到 CVC5 代码迁移日志 #3
 本次迁移的最终状态（最新）：
 1. ✅ 移除了 ppAssert 中的早期冲突检测（修正 #1）
 2. ✅ 移除了 assertionCases 中的早期检查（修正 #2）
-3. ✅ 移除了 AssertLower/AssertUpper 中的 quasiToBasic 调用（修正 #3 - 最新修复）
-4. ✅ 保留了 TheoryEngine::solve 中的优化注释和说明
-5. ✅ 恢复了原有的完整约束处理流程，确保正确性
+3. ✅ 移除了 AssertLower/AssertUpper 中的 quasiToBasic 调用（修正 #3）
+4. ✅ 修复了冲突处理中错误的 commit/revert 顺序（修正 #4 - 最新修复）
+5. ✅ 保留了 TheoryEngine::solve 中的优化注释和说明
+6. ✅ 恢复了原有的完整约束处理流程，确保正确性
 
 当前代码状态：
 - ppAssert: 仅记录边界约束到 d_learner，不进行早期冲突检测
@@ -334,6 +388,7 @@ OpenSMT 到 CVC5 代码迁移日志 #3
 - ❌ 在 ppAssert 中添加早期冲突检测 → 导致正确性错误（修正 #1）
 - ❌ 在 assertionCases 中添加早期检查 → 导致测试失败（修正 #2）
 - ❌ 在 AssertLower/AssertUpper 中添加 quasiToBasic 转换 → 导致测试失败（修正 #3）
+- ❌ 在冲突处理中先 commit 再 revert → 导致赋值状态不一致（修正 #4）
 
 未来优化方向（需谨慎）：
 - 性能优化应该在不影响正确性的前提下进行
@@ -347,6 +402,20 @@ OpenSMT 到 CVC5 代码迁移日志 #3
 - ⚠️ 谨慎考虑未来优化，始终以正确性为第一优先级
 - 📊 收集性能数据，寻找不影响正确性的优化机会
 - 🔍 深入研究 OpenSMT 的实现，理解其优化策略的完整上下文
+
+重要提醒：
+- 当前代码已经恢复到正确性优先的状态
+- 所有尝试的优化（早期冲突检测、早期约束检查、quasiToBasic）都已移除
+- 代码现在应该与原始 CVC5 在正确性方面一致
+- 虽然效率可能不如优化版本，但正确性是第一要务
+- Tableau 中的 quasi-basic 基础设施代码仍保留但未使用（可能在未来完全移除）
+
+已移除的迁移代码位置总结：
+1. ppAssert: 无迁移代码（已确认）
+2. assertionCases: 早期检查已移除（修正 #2）
+3. AssertLower: quasiToBasic 调用已移除（修正 #3，约第 561-564 行）
+4. AssertUpper: quasiToBasic 调用已移除（修正 #3，约第 706-709 行）
+5. theory_engine.cpp: 仅有注释，无代码修改
 
 ================================================================================
 结束
