@@ -596,15 +596,6 @@ private:
 public:
   const BoundsInfo& boundsInfo(ArithVar basic) const;
 
-
-private:
-  /** Initial (not context dependent) sets up for a variable.*/
-  void setupBasicValue(ArithVar x);
-
-  /** Initial (not context dependent) sets up for a new auxiliary variable.*/
-  void setupAuxiliary(TNode left);
-
-
   /**
    * Assert*(n, orig) takes an bound n that is implied by orig.
    * and asserts that as a new bound if it is tighter than the current bound
@@ -643,6 +634,13 @@ private:
    * Gets the number of active bounds for a variable.
    */
   uint32_t getNumOfBoundsActive(ArithVar v) const;
+
+private:
+  /** Initial (not context dependent) sets up for a variable.*/
+  void setupBasicValue(ArithVar x);
+
+  /** Initial (not context dependent) sets up for a new auxiliary variable.*/
+  void setupAuxiliary(TNode left);
 
   /** Tracks the bounds that were updated in the current round. */
   DenseSet d_updatedBounds;
