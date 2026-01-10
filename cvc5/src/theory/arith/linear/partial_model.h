@@ -234,9 +234,18 @@ private:
   // Function to call if the value of delta needs to be recomputed.
   DeltaComputeCallback d_deltaComputingFunc;
 
+  // Callback for bound deactivation (for quasi-basic variable support)
+  // This is called when bounds are deactivated during backtracking
+  BoundDeactivationCallback* d_boundDeactivationCallback;
 
 public:
  ArithVariables(context::Context* c, DeltaComputeCallback deltaComputation);
+ 
+ /**
+  * Sets the callback for bound deactivation.
+  * This callback is invoked when a bound is deactivated during backtracking.
+  */
+ void setBoundDeactivationCallback(BoundDeactivationCallback* callback);
 
  /**
   * This sets the lower bound for a variable in the current context.

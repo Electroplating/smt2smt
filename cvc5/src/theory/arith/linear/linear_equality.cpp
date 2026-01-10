@@ -786,6 +786,11 @@ ArithVar LinearEqualityModule::selectSlack(ArithVar x_i, VarPreferenceFunction p
     ArithVar nonbasic = entry.getColVar();
     if(nonbasic == x_i) continue;
 
+    // Skip quasi-basic variables (they should not be used as slack)
+    if(d_tableau.isQuasiBasic(nonbasic)){
+      continue;
+    }
+
     const Rational& a_ij = entry.getCoefficient();
     int sgn = a_ij.sgn();
     if(isAcceptableSlack<above>(sgn, nonbasic)){
@@ -804,6 +809,11 @@ const Tableau::Entry* LinearEqualityModule::selectSlackEntry(ArithVar x_i, bool 
     const Tableau::Entry& entry = *iter;
     ArithVar nonbasic = entry.getColVar();
     if(nonbasic == x_i) continue;
+
+    // Skip quasi-basic variables (they should not be used as slack)
+    if(d_tableau.isQuasiBasic(nonbasic)){
+      continue;
+    }
 
     const Rational& a_ij = entry.getCoefficient();
     int sgn = a_ij.sgn();

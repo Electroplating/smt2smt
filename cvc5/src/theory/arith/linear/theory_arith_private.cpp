@@ -128,6 +128,8 @@ TheoryArithPrivate::TheoryArithPrivate(Env& env,
               d_tableau,
               d_rowTracking,
               BasicVarModelUpdateCallBack(*this)),
+      d_boundsActivated(),
+      d_boundDeactivationCallback(this),
       d_diosolver(env),
       d_restartsCounter(0),
       d_tableauSizeHasBeenModified(false),
@@ -174,8 +176,11 @@ TheoryArithPrivate::TheoryArithPrivate(Env& env,
       d_solveIntAttempts(0u),
       d_newFacts(false),
       d_previousStatus(Result::UNKNOWN),
-      d_statistics(statisticsRegistry(), "theory::arith::")
+      d_statistics(statisticsRegistry(), "theory::arith::"),
+      d_boundDeactivationCallback(this)
 {
+  // Set bound deactivation callback for quasi-basic variable support
+  d_partialModel.setBoundDeactivationCallback(&d_boundDeactivationCallback);
 }
 
 TheoryArithPrivate::~TheoryArithPrivate(){
@@ -556,7 +561,16 @@ bool TheoryArithPrivate::AssertLower(ConstraintP constraint){
   d_currentPropagationList.push_back(constraint);
   d_currentPropagationList.push_back(d_partialModel.getLowerBoundConstraint(x_i));
 
+  // Track bound activation for quasi-basic variable support
+  // Check if this is actually activating a new bound (not just tightening)
+  bool hadLowerBound = d_partialModel.hasLowerBound(x_i);
+  
   d_partialModel.setLowerBoundConstraint(constraint);
+
+  // Only count as activation if variable didn't have a lower bound before
+  if(!hadLowerBound){
+    boundActivated(x_i);
+  }
 
   if(d_cmEnabled){
     if(d_congruenceManager.isWatchedVariable(x_i)){
@@ -577,11 +591,12 @@ bool TheoryArithPrivate::AssertLower(ConstraintP constraint){
     d_tableau.debugPrintIsBasic(x_i);
   }
 
-  if(!d_tableau.isBasic(x_i)){
+  if(!d_tableau.isBasic(x_i) && !d_tableau.isQuasiBasic(x_i)){
     if(d_partialModel.getAssignment(x_i) < c_i){
       d_linEq.update(x_i, c_i);
     }
-  }else{
+  }else if(d_tableau.isBasic(x_i)){
+    // Only signal basic variables (not quasi-basic, as they have no active bounds)
     d_errorSet.signalVariable(x_i);
   }
 
@@ -696,7 +711,16 @@ bool TheoryArithPrivate::AssertUpper(ConstraintP constraint){
   d_currentPropagationList.push_back(d_partialModel.getUpperBoundConstraint(x_i));
   //It is fine if this is NullConstraint
 
+  // Track bound activation for quasi-basic variable support
+  // Check if this is actually activating a new bound (not just tightening)
+  bool hadUpperBound = d_partialModel.hasUpperBound(x_i);
+  
   d_partialModel.setUpperBoundConstraint(constraint);
+
+  // Only count as activation if variable didn't have an upper bound before
+  if(!hadUpperBound){
+    boundActivated(x_i);
+  }
 
   if(d_cmEnabled){
     if(d_congruenceManager.isWatchedVariable(x_i)){
@@ -717,11 +741,12 @@ bool TheoryArithPrivate::AssertUpper(ConstraintP constraint){
     d_tableau.debugPrintIsBasic(x_i);
   }
 
-  if(!d_tableau.isBasic(x_i)){
+  if(!d_tableau.isBasic(x_i) && !d_tableau.isQuasiBasic(x_i)){
     if(d_partialModel.getAssignment(x_i) > c_i){
       d_linEq.update(x_i, c_i);
     }
-  }else{
+  }else if(d_tableau.isBasic(x_i)){
+    // Only signal basic variables (not quasi-basic, as they have no active bounds)
     d_errorSet.signalVariable(x_i);
   }
 
@@ -784,8 +809,22 @@ bool TheoryArithPrivate::AssertEquality(ConstraintP constraint){
   d_currentPropagationList.push_back(d_partialModel.getLowerBoundConstraint(x_i));
   d_currentPropagationList.push_back(d_partialModel.getUpperBoundConstraint(x_i));
 
+  // Track bound activation for quasi-basic variable support (equality activates both bounds)
+  // Check if this is actually activating new bounds (not just tightening)
+  bool hadLowerBound = d_partialModel.hasLowerBound(x_i);
+  bool hadUpperBound = d_partialModel.hasUpperBound(x_i);
+  
   d_partialModel.setUpperBoundConstraint(constraint);
   d_partialModel.setLowerBoundConstraint(constraint);
+
+  // Only count as activation if variable didn't have the corresponding bound before
+  // Equality sets both bounds, so check each separately
+  if(!hadLowerBound){
+    boundActivated(x_i);
+  }
+  if(!hadUpperBound){
+    boundActivated(x_i);
+  }
 
   if(d_cmEnabled){
     if(d_congruenceManager.isWatchedVariable(x_i)){
@@ -809,11 +848,12 @@ bool TheoryArithPrivate::AssertEquality(ConstraintP constraint){
     d_tableau.debugPrintIsBasic(x_i);
   }
 
-  if(!d_tableau.isBasic(x_i)){
+  if(!d_tableau.isBasic(x_i) && !d_tableau.isQuasiBasic(x_i)){
     if(!(d_partialModel.getAssignment(x_i) == c_i)){
       d_linEq.update(x_i, c_i);
     }
-  }else{
+  }else if(d_tableau.isBasic(x_i)){
+    // Only signal basic variables (not quasi-basic, as they have no active bounds)
     d_errorSet.signalVariable(x_i);
   }
 
@@ -5138,6 +5178,48 @@ void TheoryArithPrivate::entailmentCheckRowSum(std::pair<Node, DeltaRational>& t
 ArithCongruenceManager* TheoryArithPrivate::getCongruenceManager()
 {
   return d_cmEnabled.get() ? &d_congruenceManager : nullptr;
+}
+
+void TheoryArithPrivate::boundActivated(ArithVar v){
+  // Ensure boundsActivated map has entry for v
+  while(v >= d_boundsActivated.size()){
+    d_boundsActivated.push_back(0);
+  }
+
+  // If variable is quasi-basic and count is 0, convert to basic
+  if(d_tableau.isQuasiBasic(v) && d_boundsActivated[v] == 0){
+    // Need to convert quasi-basic to basic
+    // Create a no-op callback for quasiToBasic
+    NoEffectCCCB noeffect;
+    CoefficientChangeCallback* cccb = static_cast<CoefficientChangeCallback*>(&noeffect);
+    d_tableau.quasiToBasic(v, *cccb);
+    Assert(d_tableau.isBasic(v));
+  }
+
+  // Increase bound activation count
+  ++d_boundsActivated[v];
+}
+
+void TheoryArithPrivate::boundDeactivated(ArithVar v){
+  // Ensure variable is within bounds
+  Assert(v < d_boundsActivated.size());
+  Assert(d_boundsActivated[v] > 0);
+
+  // Decrease bound activation count
+  --d_boundsActivated[v];
+
+  // If variable is basic and count becomes 0, convert to quasi-basic
+  if(d_boundsActivated[v] == 0 && d_tableau.isBasic(v)){
+    d_tableau.basicToQuasi(v);
+    Assert(d_tableau.isQuasiBasic(v));
+  }
+}
+
+uint32_t TheoryArithPrivate::getNumOfBoundsActive(ArithVar v) const{
+  if(v >= d_boundsActivated.size()){
+    return 0;
+  }
+  return d_boundsActivated[v];
 }
 
 }  // namespace arith

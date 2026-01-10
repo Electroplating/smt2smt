@@ -37,6 +37,7 @@
 #include "theory/arith/linear/attempt_solution_simplex.h"
 #include "theory/arith/linear/congruence_manager.h"
 #include "theory/arith/linear/constraint.h"
+#include "theory/arith/linear/callbacks.h"
 #include "theory/arith/linear/dio_solver.h"
 #include "theory/arith/linear/dual_simplex.h"
 #include "theory/arith/linear/error_set.h"
@@ -300,6 +301,20 @@ private:
    * Maintains the relationship between the PartialModel and the Tableau.
    */
   LinearEqualityModule d_linEq;
+
+  /**
+   * Count of activated bounds for each variable (for quasi-basic variable support).
+   * When a bound is activated, this count increases.
+   * When count becomes 0 for a basic variable, it can be converted to quasi-basic.
+   * When count becomes 1 for a quasi-basic variable, it should be converted to basic.
+   */
+  DenseMap<uint32_t> d_boundsActivated;
+
+  /**
+   * Callback for bound deactivation (for quasi-basic variable support).
+   * This callback is registered with ArithVariables and called when bounds are deactivated.
+   */
+  BoundDeactivationCallback d_boundDeactivationCallback;
 
   /**
    * A Diophantine equation solver.  Accesses the tableau and partial
@@ -609,6 +624,25 @@ private:
   bool AssertUpper(ConstraintP constraint);
   bool AssertEquality(ConstraintP constraint);
   bool AssertDisequality(ConstraintP constraint);
+
+  /**
+   * Handles bound activation for quasi-basic variable support.
+   * When a bound is activated, increases the count for the variable.
+   * If the variable is quasi-basic and count becomes 1, converts it to basic.
+   */
+  void boundActivated(ArithVar v);
+
+  /**
+   * Handles bound deactivation for quasi-basic variable support.
+   * When a bound is deactivated, decreases the count for the variable.
+   * If the variable is basic and count becomes 0, converts it to quasi-basic.
+   */
+  void boundDeactivated(ArithVar v);
+
+  /**
+   * Gets the number of active bounds for a variable.
+   */
+  uint32_t getNumOfBoundsActive(ArithVar v) const;
 
   /** Tracks the bounds that were updated in the current round. */
   DenseSet d_updatedBounds;

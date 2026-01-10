@@ -41,7 +41,8 @@ ArithVariables::ArithVariables(context::Context* c,
       d_ubRevertHistory(c, true, UpperBoundCleanUp(this)),
       d_deltaIsSafe(false),
       d_delta(-1, 1),
-      d_deltaComputingFunc(deltaComputingFunc)
+      d_deltaComputingFunc(deltaComputingFunc),
+      d_boundDeactivationCallback(nullptr)
 { }
 
 ArithVar ArithVariables::getNumberOfVariables() const {
@@ -606,20 +607,44 @@ void ArithVariables::popUpperBound(AVCPair* c){
   ArithVar x = c->first;
   VarInfo& vi = d_vars.get(x);
   BoundsInfo prev;
-  if(vi.setUpperBound(c->second, prev)){
+  
+  // Check if upper bound was active before (to determine if it's being deactivated)
+  bool hadUpperBoundBefore = hasUpperBound(x);
+  
+  bool boundChanged = vi.setUpperBound(c->second, prev);
+  if(boundChanged){
     addToBoundQueue(x, prev);
   }
   --vi.d_pushCount;
+  
+  // Call bound deactivation callback for quasi-basic variable support
+  // Only call if bound was active before and now is removed (c->second == NullConstraint)
+  // This means the bound was deactivated during backtracking
+  if(d_boundDeactivationCallback != nullptr && hadUpperBoundBefore && c->second == NullConstraint){
+    (*d_boundDeactivationCallback)(x);
+  }
 }
 
 void ArithVariables::popLowerBound(AVCPair* c){
   ArithVar x = c->first;
   VarInfo& vi = d_vars.get(x);
   BoundsInfo prev;
-  if(vi.setLowerBound(c->second, prev)){
+  
+  // Check if lower bound was active before (to determine if it's being deactivated)
+  bool hadLowerBoundBefore = hasLowerBound(x);
+  
+  bool boundChanged = vi.setLowerBound(c->second, prev);
+  if(boundChanged){
     addToBoundQueue(x, prev);
   }
   --vi.d_pushCount;
+  
+  // Call bound deactivation callback for quasi-basic variable support
+  // Only call if bound was active before and now is removed (c->second == NullConstraint)
+  // This means the bound was deactivated during backtracking
+  if(d_boundDeactivationCallback != nullptr && hadLowerBoundBefore && c->second == NullConstraint){
+    (*d_boundDeactivationCallback)(x);
+  }
 }
 
 void ArithVariables::addToBoundQueue(ArithVar v, const BoundsInfo& prev){
@@ -686,6 +711,10 @@ ArithVariables::UpperBoundCleanUp::UpperBoundCleanUp(ArithVariables* pm)
 void ArithVariables::UpperBoundCleanUp::operator()(AVCPair& p)
 {
   d_pm->popUpperBound(&p);
+}
+
+void ArithVariables::setBoundDeactivationCallback(BoundDeactivationCallback* callback){
+  d_boundDeactivationCallback = callback;
 }
 
 }  // namespace arith

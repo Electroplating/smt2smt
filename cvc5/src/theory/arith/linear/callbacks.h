@@ -200,6 +200,18 @@ public:
   BoundCounts hasBounds(ArithVar basic) const;
 };
 
+/**
+ * Callback for bound deactivation (for quasi-basic variable support).
+ * This callback is invoked when a bound is deactivated during backtracking.
+ */
+class BoundDeactivationCallback {
+private:
+  TheoryArithPrivate* d_ta;
+public:
+  BoundDeactivationCallback(TheoryArithPrivate* ta);
+  void operator()(ArithVar v);
+};
+
 }  // namespace arith
 }  // namespace theory
 }  // namespace cvc5::internal

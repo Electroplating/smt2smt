@@ -207,6 +207,16 @@ BoundCounts BoundCountingLookup::hasBounds(ArithVar basic) const {
   return boundsInfo(basic).hasBounds();
 }
 
+BoundDeactivationCallback::BoundDeactivationCallback(TheoryArithPrivate* ta)
+  : d_ta(ta)
+{}
+
+void BoundDeactivationCallback::operator()(ArithVar v){
+  if(d_ta != nullptr){
+    d_ta->boundDeactivated(v);
+  }
+}
+
 }  // namespace arith
 }  // namespace theory
 }  // namespace cvc5::internal
