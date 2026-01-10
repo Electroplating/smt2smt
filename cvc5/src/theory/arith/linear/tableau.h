@@ -177,8 +177,16 @@ public:
   void removeBasicRow(ArithVar basic);
 
   uint32_t basicRowLength(ArithVar basic) const{
-    RowIndex ridx = basicToRowIndex(basic);
-    return getRowLength(ridx);
+    if(isBasic(basic)){
+      RowIndex ridx = basicToRowIndex(basic);
+      return getRowLength(ridx);
+    }else if(isQuasiBasic(basic)){
+      RowIndex ridx = quasiBasicToRowIndex(basic);
+      return getRowLength(ridx);
+    }else{
+      Unreachable();
+      return 0;
+    }
   }
 
   /**

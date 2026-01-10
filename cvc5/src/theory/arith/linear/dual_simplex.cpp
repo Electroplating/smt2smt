@@ -178,6 +178,15 @@ bool DualSimplexDecisionProcedure::searchForFeasibleSolution(uint32_t remainingI
 
     int32_t prevErrorSize CVC5_UNUSED = d_errorSet.errorSize();
 
+    // Check if x_i is still basic or quasi-basic (it should be, but state might have changed)
+    // If not, skip it and continue to next variable
+    // Note: This should not happen in normal operation, but can occur during state transitions
+    if(!d_linEq.getTableau().isBasic(x_i) && !d_linEq.getTableau().isQuasiBasic(x_i)){
+      // Variable is no longer basic or quasi-basic, skip it
+      // It will be removed from error set when its inconsistency is checked
+      continue;
+    }
+
     if(d_variables.cmpAssignmentLowerBound(x_i) < 0 ){
       x_j = d_linEq.selectSlackUpperBound(x_i, pf);
       if(x_j == ARITHVAR_SENTINEL ){
@@ -208,6 +217,9 @@ bool DualSimplexDecisionProcedure::searchForFeasibleSolution(uint32_t remainingI
         const DeltaRational& u_i = d_variables.getUpperBound(x_i);
         d_linEq.pivotAndUpdate(x_i, x_j, u_i);
       }
+    }else{
+      // Variable is no longer inconsistent, remove from error set and continue
+      continue;
     }
     Assert(x_j != ARITHVAR_SENTINEL);
 

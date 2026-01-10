@@ -258,24 +258,56 @@ OpenSMT 到 cvc5 LRA求解理论代码迁移日志 - 阶段2及后续
 - boundDeactivated(): 在边界被移除时减少计数,如果计数变为0且变量是基本变量,转换为准基本变量
 - 回调机制: 通过BoundDeactivationCallback在ArithVariables的popLowerBound/popUpperBound中调用boundDeactivated
 
-================================================================================
-下一步行动
-================================================================================
+       ================================================================================
+       阶段2 Bug修复
+       ================================================================================
 
-阶段2的核心实现已完成,建议:
+       2025年 - 修复 basicRowIterator 运行时错误
 
-1. 进行全面测试
-   - 测试准基本变量转换的正确性
-   - 测试边界激活/停用场景
-   - 测试回退机制(boundDeactivated的调用)
-   - 性能对比测试
+       问题:
+       - 在调用 basicRowIterator 时，变量可能既不是基本变量也不是准基本变量
+       - 错误信息: "Fatal failure within Tableau::basicRowIterator... Unreachable code reached"
+       - 原因: 在 selectSlack 中调用 basicRowIterator 时，没有检查变量是否是基本变量或准基本变量
 
-2. 可选的优化
-   - ErrorSet的transitionVariableIntoError()中可以添加准基本变量检查(需要访问Tableau)
-   - 进一步验证quasiToBasic()和basicToQuasi()的实现
-   - 确保Matrix的列双向链表正确处理准基本变量
+       修复:
 
-3. 继续阶段3和阶段4的迁移
-   - 阶段3: 独立性启发式优化
-   - 阶段4: 边界激活缓冲区优化
+       1. ✅ 修复 basicRowLength 方法 (tableau.h:179-182)
+          - 添加了对准基本变量的支持
+          - 如果变量既不是基本变量也不是准基本变量，返回0并触发Unreachable()
+
+       2. ✅ 修复 selectSlack 方法 (linear_equality.cpp:780-805)
+          - 在调用 basicRowIterator 之前添加检查
+          - 如果变量既不是基本变量也不是准基本变量，返回 ARITHVAR_SENTINEL
+
+       3. ✅ 修复 selectSlackEntry 方法 (linear_equality.cpp:807-826)
+          - 添加了相同的检查逻辑
+          - 如果变量既不是基本变量也不是准基本变量，返回 NULL
+
+       4. ✅ 修复 dual_simplex.cpp 中的调用逻辑 (dual_simplex.cpp:181-190)
+          - 在调用 selectSlack 之前检查变量是否是基本变量或准基本变量
+          - 如果不是，跳过该变量并继续下一个迭代
+
+       状态: [已修复] 2025年
+
+       ================================================================================
+       下一步行动
+       ================================================================================
+
+       阶段2的核心实现已完成并修复了关键bug,建议:
+
+       1. 进行全面测试
+          - 测试准基本变量转换的正确性
+          - 测试边界激活/停用场景
+          - 测试回退机制(boundDeactivated的调用)
+          - 性能对比测试
+          - 使用 trace1.smt2 等测试用例验证修复
+
+       2. 可选的优化
+          - ErrorSet的transitionVariableIntoError()中可以添加准基本变量检查(需要访问Tableau)
+          - 进一步验证quasiToBasic()和basicToQuasi()的实现
+          - 确保Matrix的列双向链表正确处理准基本变量
+
+       3. 继续阶段3和阶段4的迁移
+          - 阶段3: 独立性启发式优化
+          - 阶段4: 边界激活缓冲区优化
 

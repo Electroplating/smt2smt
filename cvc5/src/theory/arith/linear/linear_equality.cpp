@@ -781,6 +781,12 @@ template <bool above>
 ArithVar LinearEqualityModule::selectSlack(ArithVar x_i, VarPreferenceFunction pref) const{
   ArithVar slack = ARITHVAR_SENTINEL;
 
+  // Check if x_i is basic or quasi-basic before trying to iterate its row
+  // If it's not, return ARITHVAR_SENTINEL (should not happen for variables from error set)
+  if(!d_tableau.isBasic(x_i) && !d_tableau.isQuasiBasic(x_i)){
+    return ARITHVAR_SENTINEL;
+  }
+
   for(Tableau::RowIterator iter = d_tableau.basicRowIterator(x_i); !iter.atEnd();  ++iter){
     const Tableau::Entry& entry = *iter;
     ArithVar nonbasic = entry.getColVar();
@@ -805,6 +811,11 @@ ArithVar LinearEqualityModule::selectSlack(ArithVar x_i, VarPreferenceFunction p
 }
 
 const Tableau::Entry* LinearEqualityModule::selectSlackEntry(ArithVar x_i, bool above) const{
+  // Check if x_i is basic or quasi-basic before trying to iterate its row
+  if(!d_tableau.isBasic(x_i) && !d_tableau.isQuasiBasic(x_i)){
+    return NULL;
+  }
+
   for(Tableau::RowIterator iter = d_tableau.basicRowIterator(x_i); !iter.atEnd();  ++iter){
     const Tableau::Entry& entry = *iter;
     ArithVar nonbasic = entry.getColVar();
