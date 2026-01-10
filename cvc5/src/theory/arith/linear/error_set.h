@@ -391,6 +391,10 @@ public:
     return d_errInfo[a].getMetric();
   }
 
+  uint32_t getRowLength(ArithVar a) const {
+    return d_tableauSizes.getRowLength(a);
+  }
+
   ConstraintP getViolated(ArithVar a) const {
     return d_errInfo[a].getViolated();
   }

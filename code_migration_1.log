@@ -1,0 +1,272 @@
+================================================================================
+OpenSMT 到 cvc5 LRA求解理论代码迁移日志
+================================================================================
+迁移日期: 2025年
+基于文档: opensmt_to_cvc5.log
+用途: 记录代码迁移的详细细节,用于未来调试和参考
+
+================================================================================
+迁移概述
+================================================================================
+
+本次迁移将OpenSMT中的LRA (Linear Real Arithmetic)求解理论的关键优化
+迁移到cvc5中。根据迁移计划文档,主要包括:
+
+1. 阶段1: 最短多项式启发式集成 (高优先级,低难度)
+2. 阶段2: 准基本变量机制实现 (高优先级,高难度)
+3. 阶段3: 独立性启发式优化 (中优先级,中难度)
+4. 阶段4: 边界激活缓冲区优化 (中优先级,中难度)
+
+================================================================================
+阶段1: 最短多项式启发式集成
+================================================================================
+
+目标: 在cvc5中添加基于行长度的变量选择启发式
+
+迁移步骤:
+
+步骤1.1: 在arith_options.toml中添加SHORTEST_ROW选项
+-----------------------------------------------
+文件: cvc5/src/options/arith_options.toml
+位置: 在ErrorSelectionRule选项定义中添加新mode (第89行之后)
+
+操作: 在[[option.mode.SUM_METRIC]]之后添加:
+[[option.mode.SHORTEST_ROW]]
+  name = "shortest"
+  help = "The shortest row polynomial length."
+
+状态: [已完成] 2025年
+说明: 已成功添加SHORTEST_ROW选项到arith_options.toml中
+
+步骤1.2: 在ErrorSet中添加getRowLength()公共方法
+-----------------------------------------------
+文件: cvc5/src/theory/arith/linear/error_set.h
+位置: 在getMetric()方法之后(约390-396行)
+
+操作: 添加公共方法:
+uint32_t getRowLength(ArithVar a) const {
+  return d_tableauSizes.getRowLength(a);
+}
+
+状态: [已完成] 2025年
+说明: 通过TableauSizes访问行长度,保持了封装性
+
+步骤1.3: 在ComparatorPivotRule::operator()中添加SHORTEST_ROW比较逻辑
+------------------------------------------------------------------
+文件: cvc5/src/theory/arith/linear/error_set.cpp
+位置: ComparatorPivotRule::operator()方法(约227-272行)
+
+操作: 在switch语句中添加新case:
+case options::ErrorSelectionRule::SHORTEST_ROW:
+{
+  uint32_t v_size = d_errorSet->getRowLength(v);
+  uint32_t u_size = d_errorSet->getRowLength(u);
+  if(v_size == u_size){
+    return v > u; // 按变量ID排序
+  }else{
+    return v_size > u_size; // 行长度从小到大排序
+  }
+}
+
+解决方案: 使用ErrorSet的getRowLength()公共方法访问TableauSizes
+状态: [已完成] 2025年
+
+步骤1.4: 在ErrorSet的相关方法中添加SHORTEST_ROW处理
+---------------------------------------------------
+文件: cvc5/src/theory/arith/linear/error_set.cpp
+位置: 
+  - update()方法(约268-287行)
+  - transitionVariableIntoError()方法(约311-336行)
+  - addBackIntoFocus()方法(约346-367行)
+  - recomputeAmount()方法(约184-199行)
+
+操作: 在这些方法的switch语句中添加SHORTEST_ROW case:
+case options::ErrorSelectionRule::SHORTEST_ROW:
+  ei.setMetric(d_tableauSizes.getRowLength(ei.getVariable())); // 或v
+  d_focus.update(ei.getHandle(), ei.getVariable()); // 仅在update()中需要
+  break;
+
+实现细节:
+- update(): 添加了SHORTEST_ROW case,使用ei.getVariable()
+- transitionVariableIntoError(): 添加了SHORTEST_ROW case,使用变量v
+- addBackIntoFocus(): 添加了SHORTEST_ROW case,使用变量v
+- recomputeAmount(): 添加了SHORTEST_ROW case,使用ei.getVariable()
+
+状态: [已完成] 2025年
+
+================================================================================
+阶段2: 准基本变量机制实现
+================================================================================
+
+目标: 在cvc5中实现准基本变量机制,减少对无边界约束变量的表格维护开销
+
+迁移步骤:
+
+步骤2.1: 在ArithVariables中添加QUASIBASIC变量类型支持
+----------------------------------------------------
+文件: cvc5/src/theory/arith/linear/partial_model.h
+位置: ArithVariables::VarInfo结构体
+
+操作: 添加变量类型枚举和字段:
+enum class ArithVarType { BASIC, NONBASIC, QUASIBASIC };
+ArithVarType d_varType;
+
+状态: [待执行]
+
+步骤2.2: 在Tableau中实现准基本变量转换方法
+------------------------------------------
+文件: cvc5/src/theory/arith/linear/tableau.h/.cpp
+
+操作: 添加方法:
+- bool isQuasiBasic(ArithVar v) const;
+- void quasiToBasic(ArithVar v, CoefficientChangeCallback& cb);
+- void basicToQuasi(ArithVar v);
+
+实现细节:
+- quasiToBasic: 将准基本变量转换为基本变量
+  * 规范化行
+  * 遍历行中的所有非基本变量,将它们添加到对应列的行列表中
+  * 更新变量类型为BASIC
+  * 更新d_basic2RowIndex和d_rowIndex2basic映射
+  
+- basicToQuasi: 将基本变量转换为准基本变量
+  * 遍历行中的所有非基本变量,从对应列中移除该行
+  * 更新变量类型为QUASIBASIC
+  * 从d_basic2RowIndex和d_rowIndex2basic中移除
+
+状态: [待执行]
+
+步骤2.3: 在TheoryArithPrivate中实现边界激活计数机制
+---------------------------------------------------
+文件: cvc5/src/theory/arith/linear/theory_arith_private.h/.cpp
+
+操作: 
+- 添加成员: DenseMap<uint32_t> d_boundsActivated;
+- 在AssertLower/Upper/Equality()中增加边界激活计数
+- 在popBacktrackPoint()中减少边界激活计数
+- 实现boundActivated()和boundDeactivated()方法
+
+状态: [待执行]
+
+================================================================================
+迁移过程中遇到的问题和解决方案
+================================================================================
+
+问题1: ComparatorPivotRule无法直接访问Tableau (已解决)
+-------------------------------------------
+描述: ComparatorPivotRule::operator()需要计算行长度,但当前设计中没有Tableau指针。
+
+解决方案: 在ErrorSet中添加了getRowLength()公共方法,该方法通过d_tableauSizes访问行长度。
+这样既保持了封装性,又不需要修改ComparatorPivotRule的构造函数。
+
+实现:
+- 在ErrorSet.h中添加了getRowLength()公共方法
+- ComparatorPivotRule通过d_errorSet->getRowLength()访问行长度
+- 所有相关方法都使用d_tableauSizes.getRowLength()获取行长度
+
+状态: [已解决] 2025年
+
+问题2: 准基本变量转换需要更新矩阵双向链表
+----------------------------------------
+描述: cvc5使用稀疏矩阵的双向链表表示,转换时需要正确更新链接关系。
+
+解决方案: 参考OpenSMT的简单列表实现,适配到cvc5的双向链表结构。
+
+================================================================================
+待完成任务清单
+================================================================================
+
+阶段1: 最短多项式启发式集成 (已完成部分实现)
+[✓] 1.1 在arith_options.toml中添加SHORTEST_ROW选项 - 已完成
+[✓] 1.2 在ErrorSet中添加getRowLength()公共方法 - 已完成
+[✓] 1.3 修改ComparatorPivotRule支持SHORTEST_ROW - 已完成
+[✓] 1.4 在ErrorSet相关方法中添加SHORTEST_ROW处理 - 已完成
+[ ] 1.5 测试最短多项式启发式功能 - 待测试
+
+阶段2:
+[ ] 2.1 在ArithVariables中添加QUASIBASIC类型
+[ ] 2.2 在Tableau中实现准基本变量转换
+[ ] 2.3 在TheoryArithPrivate中实现边界激活计数
+[ ] 2.4 修改ErrorSet跳过准基本变量
+[ ] 2.5 测试准基本变量机制
+
+阶段3和阶段4: 待阶段1和阶段2完成后进行
+
+================================================================================
+参考文件映射
+================================================================================
+
+OpenSMT文件                              cvc5对应文件
+---------------------------------------  ---------------------------------------
+opensmt/src/tsolvers/lasolver/Simplex.h  cvc5/src/theory/arith/linear/dual_simplex.h
+opensmt/src/tsolvers/lasolver/Simplex.cc cvc5/src/theory/arith/linear/dual_simplex.cpp
+opensmt/src/tsolvers/lasolver/Tableau.h  cvc5/src/theory/arith/linear/tableau.h
+opensmt/src/tsolvers/lasolver/Tableau.cc cvc5/src/theory/arith/linear/tableau.cpp
+opensmt/src/tsolvers/lasolver/LRAModel.h cvc5/src/theory/arith/linear/partial_model.h
+
+关键函数映射:
+OpenSMT::Simplex::getBasicVarToFixByShortestPoly() 
+  -> cvc5::ErrorSet::ComparatorPivotRule with SHORTEST_ROW rule
+
+OpenSMT::Tableau::getPolySize() 
+  -> cvc5::Tableau::basicRowLength()
+
+OpenSMT::Tableau::quasiToBasic() 
+  -> cvc5::Tableau::quasiToBasic() [待实现]
+
+================================================================================
+阶段1实施总结
+================================================================================
+
+已完成工作:
+1. ✅ 在arith_options.toml中添加了SHORTEST_ROW选项
+   - 选项名: shortest
+   - 帮助文本: "The shortest row polynomial length."
+
+2. ✅ 在ErrorSet中添加了getRowLength()公共方法
+   - 位置: error_set.h, 约394-396行
+   - 实现: 通过TableauSizes访问行长度
+
+3. ✅ 在ComparatorPivotRule::operator()中实现了SHORTEST_ROW比较逻辑
+   - 位置: error_set.cpp, 约264-272行
+   - 逻辑: 优先选择行长度最小的变量,行长度相同时按变量ID排序
+
+4. ✅ 在ErrorSet的相关方法中添加了SHORTEST_ROW处理
+   - update()方法: 约281行
+   - transitionVariableIntoError()方法: 约333行
+   - addBackIntoFocus()方法: 约364行
+   - recomputeAmount()方法: 约196行
+
+技术细节:
+- 使用TableauSizes::getRowLength()获取行长度,与现有SUM_METRIC机制保持一致
+- 行长度存储在ErrorInformation的metric字段中,与SUM_METRIC使用相同的存储机制
+- 比较逻辑: 行长度从小到大排序,长度相同时变量ID从小到大排序(通过v > u实现)
+
+编译状态:
+- 已通过编译检查,无linter错误
+
+使用方式:
+用户可以通过命令行选项使用最短多项式启发式:
+  cvc5 --error-selection-rule=shortest <input_file>
+
+或者在代码中设置:
+  options().arith.arithErrorSelectionRule = options::ErrorSelectionRule::SHORTEST_ROW;
+
+================================================================================
+下一步工作
+================================================================================
+
+阶段1剩余任务:
+- [ ] 功能测试: 创建测试用例验证SHORTEST_ROW启发式的有效性
+- [ ] 性能测试: 对比使用SHORTEST_ROW前后的性能差异
+- [ ] 文档更新: 更新相关文档说明新选项
+
+阶段2准备工作:
+- [ ] 分析准基本变量机制的实现需求
+- [ ] 设计变量类型枚举的集成方案
+- [ ] 规划Tableau中准基本变量转换的实现细节
+
+================================================================================
+日志结束
+================================================================================
+

@@ -192,6 +192,9 @@ void ErrorSet::recomputeAmount(ErrorInformation& ei,
     case options::ErrorSelectionRule::SUM_METRIC:
       ei.setMetric(sumMetric(ei.getVariable()));
       break;
+    case options::ErrorSelectionRule::SHORTEST_ROW:
+      ei.setMetric(d_tableauSizes.getRowLength(ei.getVariable()));
+      break;
     case options::ErrorSelectionRule::VAR_ORDER:
       // do nothing
       break;
@@ -261,6 +264,16 @@ bool ComparatorPivotRule::operator()(ArithVar v, ArithVar u) const {
         return cmp < 0;
       }
     }
+    case options::ErrorSelectionRule::SHORTEST_ROW:
+    {
+      uint32_t v_size = d_errorSet->getRowLength(v);
+      uint32_t u_size = d_errorSet->getRowLength(u);
+      if(v_size == u_size){
+        return v > u; // 按变量ID排序
+      }else{
+        return v_size > u_size; // 行长度从小到大排序
+      }
+    }
   }
   Unreachable();
 }
@@ -276,6 +289,10 @@ void ErrorSet::update(ErrorInformation& ei){
         break;
       case options::ErrorSelectionRule::SUM_METRIC:
         ei.setMetric(sumMetric(ei.getVariable()));
+        d_focus.update(ei.getHandle(), ei.getVariable());
+        break;
+      case options::ErrorSelectionRule::SHORTEST_ROW:
+        ei.setMetric(d_tableauSizes.getRowLength(ei.getVariable()));
         d_focus.update(ei.getHandle(), ei.getVariable());
         break;
       case options::ErrorSelectionRule::VAR_ORDER:
@@ -325,6 +342,9 @@ void ErrorSet::transitionVariableIntoError(ArithVar v) {
     case options::ErrorSelectionRule::SUM_METRIC:
       ei.setMetric(sumMetric(ei.getVariable()));
       break;
+    case options::ErrorSelectionRule::SHORTEST_ROW:
+      ei.setMetric(d_tableauSizes.getRowLength(v));
+      break;
     case options::ErrorSelectionRule::VAR_ORDER:
       // do nothing
       break;
@@ -354,6 +374,9 @@ void ErrorSet::addBackIntoFocus(ArithVar v) {
       break;
     case options::ErrorSelectionRule::SUM_METRIC:
       ei.setMetric(sumMetric(v));
+      break;
+    case options::ErrorSelectionRule::SHORTEST_ROW:
+      ei.setMetric(d_tableauSizes.getRowLength(v));
       break;
     case options::ErrorSelectionRule::VAR_ORDER:
       // do nothing

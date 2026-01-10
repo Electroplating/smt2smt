@@ -1,0 +1,754 @@
+================================================================================
+OpenSMT LRA (Linear Real Arithmetic) 求解器算法分析文档
+================================================================================
+生成时间: 2025年
+用途: 代码迁移和技术分析参考
+
+本文档详细分析了 OpenSMT 求解器中用于解决 LRA (Linear Real Arithmetic) 
+问题的核心算法、数据结构和函数调用关系。
+
+================================================================================
+第一部分: 关键函数 (Critical Functions)
+================================================================================
+
+1. LASolver 类 - 主求解器类
+   位置: opensmt/src/tsolvers/lasolver/LASolver.h, LASolver.cc
+
+   1.1 构造函数和初始化
+       - LASolver(SMTConfig & c, ArithLogic & l)
+         * 初始化 LRA 求解器
+         * 创建 laVarStore, laVarMapper, boundStore, simplex
+       
+       - initSolver()
+         * 初始化求解器状态从 INIT 到 SAT
+         * 遍历所有已知的 PTRef，注册算术项并添加边界约束
+         * 调用 boundStore.buildBounds() 构建边界
+         * 调用 simplex.initModel() 初始化模型
+
+   1.2 约束声明和断言
+       - declareAtom(PTRef leq_tr)
+         * 声明一个原子约束（必须是 <= 形式）
+         * 调用 registerArithmeticTerm() 注册项
+         * 调用 addBound() 添加边界
+       
+       - assertLit(PtAsgn asgn)
+         * 断言一个字面量
+         * 获取对应的 LABoundRefPair
+         * 调用 assertBound() 断言边界
+         * 记录决策并获取简单推理
+       
+       - assertBound(LABoundRef boundRef)
+         * 断言一个边界约束
+         * 调用 simplex.assertBound() 在单纯形法中处理
+         * 存储解释（如果存在冲突）
+       
+       - addBound(PTRef leq_tr)
+         * 将 PTRef 约束转换为边界对
+         * 调用 getBoundsValue() 获取边界值
+         * 分配边界对并建立映射关系
+
+   1.3 可满足性检查
+       - check(bool complete)
+         * 主检查函数，继承自 TSolver
+         * 调用 check_simplex() 执行单纯形法检查
+       
+       - check_simplex(bool complete)
+         * 执行单纯形法可满足性检查
+         * 调用 simplex.checkSimplex() 获取解释
+         * 根据结果设置状态为 SAT 或 UNSAT
+       
+       - TRes checkIntegersAndSplit()
+         * 检查整数约束并可能产生分割
+         * 用于混合整数线性算术 (LIA)
+         * 如果模型不满足整数性，创建分割约束
+
+   1.4 项和变量注册
+       - registerArithmeticTerm(PTRef expr)
+         * 注册一个算术项（多项式或变量）
+         * 处理简单变量、乘积项和线性组合
+         * 调用 simplex.newNonbasicVar() 或 simplex.newRow()
+       
+       - getLAVar_single(PTRef expr_in)
+         * 获取或创建单个 LA 变量
+         * 使用 laVarMapper 管理映射关系
+       
+       - expressionToLVarPoly(PTRef term)
+         * 将 PTRef 表达式转换为 Tableau::Polynomial
+         * 分解项为变量和系数对
+
+   1.5 回退和状态管理
+       - pushBacktrackPoint()
+         * 推送回退点
+         * 调用 simplex.pushBacktrackPoint()
+       
+       - popBacktrackPoint()
+         * 弹出单个回退点
+       
+       - popBacktrackPoints(unsigned int count)
+         * 弹出多个回退点
+         * 恢复决策和边界状态
+         * 调用 simplex.finalizeBacktracking()
+
+   1.6 模型计算
+       - computeModel()
+         * 计算具体模型值
+         * 调用 computeConcreteModel() 为每个变量计算值
+
+   1.7 插值
+       - getRealInterpolant(ipartitions_t const &, ItpColorMap *, PartitionManager &)
+         * 获取实数插值
+         * 使用 FarkasInterpolator 生成插值
+
+2. Simplex 类 - 单纯形法实现
+   位置: opensmt/src/tsolvers/lasolver/Simplex.h, Simplex.cc
+
+   2.1 核心算法
+       - checkSimplex()
+         * 单纯形法主循环
+         * 使用 Bland 规则或启发式规则选择基本变量
+         * 查找非基本变量进行旋转
+         * 执行旋转操作直到找到满足解或检测到冲突
+         * 返回解释（冲突时为非空）
+       
+       - pivot(LVRef basic, LVRef nonBasic)
+         * 执行旋转操作
+         * 调用 tableau.pivot() 更新表格
+         * 调用 updateValues() 更新变量值
+         * 更新候选变量集合
+       
+       - updateValues(LVRef basicVar, LVRef nonBasicVar)
+         * 更新变量值
+         * 计算新的基本变量值
+         * 更新所有依赖行的值
+         * 检查边界违规并更新候选集合
+
+   2.2 变量选择策略
+       - getBasicVarToFixByBland()
+         * 使用 Bland 规则选择基本变量
+         * 选择最小 ID 的违规基本变量
+       
+       - getBasicVarToFixByShortestPoly()
+         * 使用最短多项式启发式
+         * 选择行多项式最小的违规基本变量
+       
+       - findNonBasicForPivotByBland(LVRef basicVar)
+         * 使用 Bland 规则查找旋转的非基本变量
+         * 选择最小 ID 的可行非基本变量
+       
+       - findNonBasicForPivotByHeuristic(LVRef basicVar)
+         * 使用启发式查找旋转的非基本变量
+         * 优先选择独立性更高的变量（在更少行中出现）
+
+   2.3 边界管理
+       - assertBound(LABoundRef boundRef)
+         * 断言一个边界
+         * 检查边界是否平凡满足或平凡不满足
+         * 激活边界并更新模型
+         * 添加到激活边界缓冲区
+       
+       - boundActivated(LVRef v)
+         * 标记变量边界已激活
+         * 如果是准基本变量，转换为基本变量
+       
+       - boundDeactivated(LVRef v)
+         * 标记变量边界已停用
+         * 如果基本变量无活动边界，转换为准基本变量
+
+   2.4 冲突检测
+       - getConflictingBounds(LVRef x, bool conflictOnLower)
+         * 获取冲突的边界集合
+         * 返回导致冲突的边界及其系数的解释
+
+   2.5 准基本变量处理
+       - quasiToBasic(LVRef it)
+         * 将准基本变量转换为基本变量
+         * 更新表格结构
+
+3. Tableau 类 - 单纯形表格
+   位置: opensmt/src/tsolvers/lasolver/Tableau.h, Tableau.cc
+
+   3.1 表格操作
+       - newRow(LVRef v, std::unique_ptr<Polynomial> poly)
+         * 添加新行（基本变量）
+         * 规范化行多项式
+       
+       - newNonbasicVar(LVRef v)
+         * 添加新的非基本变量
+         * 创建对应的列
+       
+       - pivot(LVRef bv, LVRef nv)
+         * 执行表格旋转
+         * 交换基本变量和非基本变量
+         * 更新所有相关行和列
+         * 更新列中的行引用
+
+   3.2 变量状态查询
+       - isBasic(LVRef v)
+         * 检查变量是否为基本变量
+       
+       - isNonBasic(LVRef v)
+         * 检查变量是否为非基本变量
+       
+       - isQuasiBasic(LVRef v)
+         * 检查变量是否为准基本变量
+       
+       - quasiToBasic(LVRef v)
+         * 将准基本变量转换为基本变量
+       
+       - basicToQuasi(LVRef v)
+         * 将基本变量转换为准基本变量
+
+   3.3 访问方法
+       - getRowPoly(LVRef basicVar)
+         * 获取基本变量的行多项式
+       
+       - getColumn(LVRef nonBasicVar)
+         * 获取非基本变量的列
+       
+       - getCoeff(LVRef basicVar, LVRef nonBasicVar)
+         * 获取表格中的系数
+
+4. LRAModel 类 - 模型管理
+   位置: opensmt/src/tsolvers/lasolver/LRAModel.h, LRAModel.cc
+
+   4.1 变量和赋值管理
+       - addVar(LVRef v)
+         * 添加变量到模型
+         * 初始化赋值和边界数组
+       
+       - write(const LVRef &v, Delta val)
+         * 写入变量值
+         * 标记变量为已更改
+       
+       - pushBound(const LABoundRef br)
+         * 推送边界约束
+         * 更新上下边界栈
+       
+       - popBounds()
+         * 弹出边界约束
+         * 恢复之前的边界状态
+
+   4.2 边界查询
+       - readLBoundRef(LVRef v)
+         * 读取下边界引用
+       
+       - readUBoundRef(LVRef v)
+         * 读取上边界引用
+       
+       - hasLBound(LVRef v)
+         * 检查是否有下边界
+       
+       - hasUBound(LVRef v)
+         * 检查是否有上边界
+
+   4.3 边界检查
+       - boundTriviallySatisfied(LVRef v, LABoundRef b)
+         * 检查边界是否平凡满足
+       
+       - boundTriviallyUnsatisfied(LVRef v, LABoundRef b)
+         * 检查边界是否平凡不满足
+       
+       - isEquality(LVRef v)
+         * 检查变量是否有等式约束
+
+5. LABoundStore 类 - 边界存储
+   位置: opensmt/src/tsolvers/lasolver/LABounds.h
+
+   5.1 边界管理
+       - allocBoundPair(LVRef v, BoundValuePair boundPair)
+         * 分配一对边界（上界和下界）
+       
+       - allocBoundPairAndSort(LVRef v, BoundValuePair boundPair)
+         * 分配边界对并排序
+       
+       - buildBounds()
+         * 构建所有变量的边界列表
+
+   5.2 边界查询
+       - getBounds(LVRef v)
+         * 获取变量的所有边界
+       
+       - getBoundByIdx(LVRef v, int it)
+         * 通过索引获取边界
+
+6. FarkasInterpolator 类 - 插值生成
+   位置: opensmt/src/tsolvers/lasolver/FarkasInterpolator.h
+
+   6.1 插值方法
+       - getFarkasInterpolant()
+         * 获取标准 Farkas 插值
+       
+       - getDualFarkasInterpolant()
+         * 获取对偶 Farkas 插值
+       
+       - getFlexibleInterpolant(Real)
+         * 获取灵活插值（带强度因子）
+       
+       - getDecomposedInterpolant()
+         * 获取分解插值
+
+7. LAVarMapper 类 - 变量映射
+   位置: opensmt/src/tsolvers/lasolver/LAVarMapper.h
+
+   7.1 映射管理
+       - registerNewMapping(LVRef, PTRef)
+         * 注册新的变量映射
+       
+       - getVar(PTRef)
+         * 获取 PTRef 对应的 LVRef
+       
+       - getVarPTRef(LVRef)
+         * 获取 LVRef 对应的 PTRef
+
+8. LATHandler 类 - 理论处理器
+   位置: opensmt/src/tsolvers/LATHandler.h
+
+   8.1 接口方法
+       - assertLit(PtAsgn)
+         * 断言字面量（委托给 LASolver）
+       
+       - check(bool)
+         * 执行可满足性检查
+       
+       - getInterpolant(...)
+         * 获取插值（委托给 LASolver）
+
+================================================================================
+第二部分: 数据结构 (Data Structures)
+================================================================================
+
+1. 核心引用类型
+   位置: opensmt/src/tsolvers/lasolver/LARefs.h
+
+   1.1 LVRef (Linear Variable Reference)
+       - uint32_t x: 变量索引
+       - 用于引用线性算术变量
+       - 提供 Undef 常量
+       - 支持哈希 (LVRefHash) 和比较 (LVRefComp)
+
+   1.2 LABoundRef (Linear Arithmetic Bound Reference)
+       - uint32_t x: 边界索引
+       - 用于引用边界约束
+       - 提供 Undef 和 Infty 常量
+
+   1.3 BoundT (Bound Type)
+       - char t: 边界类型标识
+       - bound_l: 下界 (0)
+       - bound_u: 上界 (1)
+
+2. Delta 类 - 带严格性的实数值
+   位置: opensmt/src/tsolvers/lasolver/Delta.h
+
+   2.1 成员变量
+       - Real r: 主值
+       - Real d: 严格性增量（用于区分 < 和 <=）
+
+   2.2 功能
+       - 支持算术运算（+, -, *, /）
+       - 支持比较运算（<, <=, >, >=, ==, !=）
+       - 处理严格不等式和弱不等式
+
+3. LAVarStore 类 - 变量存储
+   位置: opensmt/src/tsolvers/lasolver/LAVar.h
+
+   3.1 数据结构
+       - std::vector<LVRef> lavars: 变量引用列表
+
+   3.2 方法
+       - getNewVar(): 创建新变量并返回引用
+       - clear(): 清空所有变量
+       - numVars(): 返回变量数量
+
+4. LABound 类 - 边界对象
+   位置: opensmt/src/tsolvers/lasolver/LABounds.h
+
+   4.1 成员变量
+       - char type: 边界类型（上界/下界）
+       - unsigned bidx: 边界索引
+       - int id: 唯一标识符
+       - LVRef var: 关联的变量
+       - Delta delta: 边界值
+
+   4.2 LABoundAllocator 类
+       - 继承自 RegionAllocator<uint32_t>
+       - 使用区域分配器管理边界内存
+       - 支持高效的分配和释放
+
+5. LABoundStore 类 - 边界存储
+   位置: opensmt/src/tsolvers/lasolver/LABounds.h
+
+   5.1 数据结构
+       - LABoundAllocator ba: 边界分配器
+       - LAVarStore & lvstore: 变量存储引用
+       - std::vector<vec<LABoundRef>> bounds: 每个变量的边界列表
+
+   5.2 功能
+       - 管理所有变量的边界
+       - 支持边界排序和查询
+       - 处理边界对（上界和下界）
+
+6. LRAModel 类 - 线性实数算术模型
+   位置: opensmt/src/tsolvers/lasolver/LRAModel.h, LRAModel.cc
+
+   6.1 数据结构
+       - LABoundStore & bs: 边界存储引用
+       - std::vector<Delta> current_assignment: 当前赋值
+       - std::vector<Delta> last_consistent_assignment: 最后一致赋值
+       - Map<LVRef, bool, LVRefHash> has_model: 变量模型标记
+       - vec<vec<LABoundRef>> int_lbounds: 下边界栈
+       - vec<vec<LABoundRef>> int_ubounds: 上边界栈
+       - vec<LABoundRef> bound_trace: 边界追踪
+       - vec<int> bound_limits: 边界限制点（用于回退）
+       - NatSet changed_vars_set: 已更改变量集合
+       - vec<LVRef> changed_vars_vec: 已更改变量向量
+
+   6.2 功能
+       - 维护变量赋值
+       - 管理边界约束栈
+       - 支持回退操作
+
+7. Tableau 类 - 单纯形表格
+   位置: opensmt/src/tsolvers/lasolver/Tableau.h, Tableau.cc
+
+   7.1 数据结构
+       - std::vector<std::unique_ptr<Column>> cols: 列（非基本变量）
+       - rows_t rows: 行（基本变量的多项式）
+       - std::vector<VarType> varTypes: 变量类型数组
+       - Polynomial::poly_t tmp_storage: 临时存储
+
+   7.2 Column 类（列）
+       - std::vector<LVRef> rows: 包含该列的基本变量列表
+
+   7.3 VarType 枚举
+       - NONE: 未处理
+       - BASIC: 基本变量
+       - NONBASIC: 非基本变量
+       - QUASIBASIC: 准基本变量（无活动边界的基本变量）
+
+8. Polynomial 类 - 多项式
+   位置: opensmt/src/common/polynomials/Polynomial.h
+
+   8.1 数据结构
+       - 稀疏表示的多项式
+       - 项为 (变量, 系数) 对
+       - 使用多项式模板 PolynomialT<LVRef>
+
+9. Simplex 类数据结构
+   位置: opensmt/src/tsolvers/lasolver/Simplex.h
+
+   9.1 成员变量
+       - std::unique_ptr<LRAModel> model: 模型
+       - LABoundStore & boundStore: 边界存储
+       - Tableau tableau: 单纯形表格
+       - std::set<LVRef, LVRefComp> candidates: 候选变量（超出边界）
+       - std::vector<std::pair<LVRef, LABoundRef>> bufferOfActivatedBounds: 激活边界缓冲区
+       - std::vector<unsigned int> boundsActivated: 每个变量的激活边界计数
+
+10. LASolver 类数据结构
+    位置: opensmt/src/tsolvers/lasolver/LASolver.h
+
+    10.1 成员变量
+        - ArithLogic & logic: 算术逻辑
+        - LAVarStore laVarStore: 变量存储
+        - LAVarMapper laVarMapper: 变量映射器
+        - LABoundStore boundStore: 边界存储
+        - Simplex simplex: 单纯形法求解器
+        - vec<PtAsgn> decision_trace: 决策追踪
+        - vec<int> dec_limit: 决策限制点
+        - vec<DecEl> int_decisions: 整数决策
+        - vec<PtAsgn> LABoundRefToLeqAsgn: 边界到字面量映射
+        - vec<LABoundRefPair> LeqToLABoundRefPair: 字面量到边界对映射
+        - Map<LVRef, bool, LVRefHash> int_vars_map: 整数变量映射
+        - vec<LVRef> int_vars: 整数变量列表
+        - std::vector<Real> concrete_model: 具体模型值
+        - LASolverStatus status: 求解器状态
+
+    10.2 LASolverStatus 枚举
+        - INIT: 初始化
+        - INCREMENT: 增量处理
+        - SAT: 可满足
+        - UNSAT: 不可满足
+        - NEWSPLIT: 新分割
+        - UNKNOWN: 未知
+        - ERROR: 错误
+
+11. Explanation 结构 - 冲突解释
+    位置: opensmt/src/tsolvers/lasolver/Simplex.h
+
+    11.1 ExplTerm 结构
+        - LABoundRef boundref: 边界引用
+        - Real coeff: Farkas 系数
+
+    11.2 Explanation 类型
+        - std::vector<ExplTerm>: 解释项列表
+
+12. SparseMatrix 相关
+    位置: opensmt/src/tsolvers/lasolver/SparseMatrix.h
+
+    12.1 SparseColMatrix 类
+        - 用于稀疏矩阵表示
+        - 支持列式存储
+        - 用于 Hermite 标准形计算
+
+================================================================================
+第三部分: 函数调用关系 (Function Call Relations)
+================================================================================
+
+1. 求解器初始化流程
+   
+   MainSolver::MainSolver()
+   └─> LATheory<ArithLogic, LATHandler>::LATheory()
+       └─> LATHandler::LATHandler()
+           └─> LASolver::LASolver()
+               ├─> LAVarStore::LAVarStore()
+               ├─> LAVarMapper::LAVarMapper()
+               ├─> LABoundStore::LABoundStore()
+               └─> Simplex::Simplex()
+
+2. 约束声明流程
+   
+   TSolverHandler::declareAtom(PTRef)
+   └─> LATHandler::declareAtom(PTRef)
+       └─> LASolver::declareAtom(PTRef)
+           ├─> LASolver::registerArithmeticTerm(PTRef)
+           │   ├─> LASolver::getLAVar_single(PTRef)
+           │   │   ├─> LAVarMapper::hasVar(PTRef)
+           │   │   ├─> LAVarStore::getNewVar()
+           │   │   └─> LAVarMapper::registerNewMapping(LVRef, PTRef)
+           │   ├─> LASolver::expressionToLVarPoly(PTRef)
+           │   │   ├─> ArithLogic::getPterm(PTRef)
+           │   │   ├─> ArithLogic::splitTermToVarAndConst(PTRef)
+           │   │   └─> Tableau::Polynomial::addTerm(LVRef, Real)
+           │   ├─> Simplex::newNonbasicVar(LVRef)
+           │   │   └─> Tableau::newNonbasicVar(LVRef)
+           │   ├─> Simplex::nonbasicVar(LVRef)
+           │   │   └─> Tableau::nonbasicVar(LVRef)
+           │   └─> Simplex::newRow(LVRef, Polynomial)
+           │       └─> Tableau::newRow(LVRef, Polynomial)
+           │           └─> Tableau::normalizeRow(LVRef)
+           └─> LASolver::addBound(PTRef)
+               ├─> ArithLogic::leqToConstantAndTerm(PTRef)
+               ├─> LASolver::getBoundsValue(LVRef, Real, bool)
+               └─> LABoundStore::allocBoundPair(LVRef, BoundValuePair)
+
+3. 断言约束流程
+   
+   TSolverHandler::assertLit(PtAsgn)
+   └─> LATHandler::assertLit(PtAsgn)
+       └─> LASolver::assertLit(PtAsgn)
+           ├─> LASolver::getBoundRefPair(PTRef)
+           │   └─> ArithLogic::getPterm(PTRef)
+           ├─> LASolver::assertBound(LABoundRef)
+           │   └─> Simplex::assertBound(LABoundRef)
+           │       ├─> LRAModel::boundTriviallyUnsatisfied(LVRef, LABoundRef)
+           │       ├─> LRAModel::boundTriviallySatisfied(LVRef, LABoundRef)
+           │       ├─> Simplex::boundActivated(LVRef)
+           │       │   ├─> Simplex::quasiToBasic(LVRef)
+           │       │   │   └─> Tableau::quasiToBasic(LVRef)
+           │       │   └─> boundsActivated[getVarId(v)]++
+           │       ├─> LRAModel::pushBound(LABoundRef)
+           │       └─> bufferOfActivatedBounds.push_back()
+           ├─> LASolver::storeExplanation(Explanation)
+           ├─> LASolver::pushDecision(PtAsgn)
+           └─> LASolver::getSimpleDeductions(LABoundRef)
+
+4. 可满足性检查流程
+   
+   TSolverHandler::check(bool)
+   └─> LATHandler::check(bool)
+       └─> LASolver::check(bool)
+           └─> LASolver::check_simplex(bool)
+               └─> Simplex::checkSimplex()
+                   ├─> Simplex::processBufferOfActivatedBounds()
+                   │   └─> Simplex::changeValueBy(LVRef, Delta)
+                   │       ├─> LRAModel::write(LVRef, Delta)
+                   │       └─> Simplex::newCandidate(LVRef) / eraseCandidate(LVRef)
+                   ├─> Simplex::getBasicVarToFixByShortestPoly()
+                   │   └─> Tableau::getPolySize(LVRef)
+                   ├─> Simplex::getBasicVarToFixByBland()
+                   ├─> Simplex::findNonBasicForPivotByHeuristic(LVRef)
+                   │   ├─> Tableau::getRowPoly(LVRef)
+                   │   ├─> Simplex::isModelStrictlyUnderUpperBound(LVRef)
+                   │   │   └─> LRAModel::read(LVRef)
+                   │   ├─> Simplex::isModelStrictlyOverLowerBound(LVRef)
+                   │   └─> Tableau::getColumn(LVRef)
+                   ├─> Simplex::findNonBasicForPivotByBland(LVRef)
+                   │   └─> [类似启发式方法，但使用最小 ID]
+                   ├─> Simplex::pivot(LVRef, LVRef)
+                   │   ├─> Simplex::updateValues(LVRef, LVRef)
+                   │   │   ├─> LRAModel::read(LVRef)
+                   │   │   ├─> LRAModel::write(LVRef, Delta)
+                   │   │   ├─> Tableau::getCoeff(LVRef, LVRef)
+                   │   │   └─> Simplex::newCandidate(LVRef) / eraseCandidate(LVRef)
+                   │   ├─> Tableau::pivot(LVRef, LVRef)
+                   │   │   ├─> Tableau::getRowPoly(LVRef)
+                   │   │   ├─> Polynomial::removeVar(LVRef)
+                   │   │   ├─> Polynomial::divideBy(Real)
+                   │   │   ├─> Polynomial::negate()
+                   │   │   ├─> Polynomial::addTerm(LVRef, Real)
+                   │   │   ├─> Tableau::moveRowFromTo(LVRef, LVRef)
+                   │   │   ├─> Tableau::moveColFromTo(LVRef, LVRef)
+                   │   │   └─> Tableau::removeRowFromColumn() / addRowToColumn()
+                   │   ├─> Simplex::eraseCandidate(LVRef)
+                   │   └─> Simplex::newCandidate(LVRef)
+                   ├─> Simplex::getConflictingBounds(LVRef, bool)
+                   │   ├─> LRAModel::readLBoundRef(LVRef)
+                   │   ├─> LRAModel::readUBoundRef(LVRef)
+                   │   └─> LABoundStore::operator[](LABoundRef)
+                   └─> LRAModel::saveAssignment() / restoreAssignment()
+
+5. 回退流程
+   
+   TSolverHandler::popBacktrackPoint()
+   └─> LATHandler::popBacktrackPoint()
+       └─> LASolver::popBacktrackPoint()
+           └─> LASolver::popBacktrackPoints(unsigned int)
+               └─> LASolver::popTermBacktrackPoint()
+                   ├─> Simplex::popBacktrackPoint()
+                   │   └─> LRAModel::popBacktrackPoint()
+                   │       └─> LRAModel::popBounds()
+                   │           └─> LABoundStore::operator[](LABoundRef)
+                   ├─> LASolver::popDecisions()
+                   │   └─> decision_trace.shrink()
+                   └─> Simplex::finalizeBacktracking()
+                       └─> Simplex::boundDeactivated(LVRef)
+                           ├─> boundsActivated[getVarId(v)]--
+                           └─> Tableau::basicToQuasi(LVRef)
+
+6. 模型计算流程
+   
+   TSolverHandler::computeModel()
+   └─> LASolver::computeModel()
+       └─> LASolver::computeConcreteModel(LVRef, Real)
+           └─> concrete_model[getVarId(v)] = val
+
+7. 插值生成流程
+   
+   TSolverHandler::getInterpolant(...)
+   └─> LATHandler::getInterpolant(...)
+       └─> LASolver::getRealInterpolant(...)
+           ├─> LASolver::getConflict(vec<PtAsgn>)
+           │   └─> explanation.copyTo()
+           └─> FarkasInterpolator::getFarkasInterpolant() / ...
+               ├─> FarkasInterpolator::getColorFor(PTRef)
+               ├─> FarkasInterpolator::weightedSum(...)
+               │   └─> ArithLogic::mkPlus(...)
+               │   └─> ArithLogic::mkTimes(...)
+               └─> ArithLogic::mkLeq(...)
+
+8. 变量和边界查询流程
+   
+   LASolver::getVarForTerm(PTRef)
+   └─> LAVarMapper::getVar(PTRef)
+   
+   LASolver::getVarPTRef(LVRef)
+   └─> LAVarMapper::getVarPTRef(LVRef)
+   
+   Simplex::getValuation(LVRef)
+   └─> LRAModel::read(LVRef)
+   
+   Simplex::Lb(LVRef) / Ub(LVRef)
+   └─> LRAModel::Lb(LVRef) / Ub(LVRef)
+       └─> LABoundStore::operator[](LABoundRef)
+           └─> LABound::getValue()
+
+9. 辅助数据结构操作
+   
+   Tableau::getRowPoly(LVRef)
+   └─> rows[getVarId(v)]->getPoly()
+   
+   Tableau::getColumn(LVRef)
+   └─> cols[getVarId(v)]
+   
+   LRAModel::hasLBound(LVRef) / hasUBound(LVRef)
+   └─> int_lbounds[getVarId(v)].size() > 0
+       / int_ubounds[getVarId(v)].size() > 0
+   
+   LABoundStore::getBounds(LVRef)
+   └─> bounds[getVarId(v)]
+
+10. 关键算法循环
+   
+   单纯形法主循环 (Simplex::checkSimplex):
+   while (true) {
+       1. processBufferOfActivatedBounds()
+       2. 选择违规的基本变量 x
+       3. 查找可行的非基本变量 y
+       4. if (y == Undef) {
+            return getConflictingBounds(x)
+          }
+       5. pivot(x, y)
+       6. 更新候选集合
+   }
+   
+   边界断言处理 (Simplex::assertBound):
+   1. 检查平凡满足/不满足
+   2. 激活边界
+   3. 如果是准基本变量，转换为基本变量
+   4. 更新模型
+   5. 添加到激活缓冲区
+
+================================================================================
+算法总结
+================================================================================
+
+OpenSMT 的 LRA 求解器使用改进的单纯形法 (Simplex Algorithm) 来解决线性
+实数算术约束问题。主要特点包括：
+
+1. 数据结构：
+   - 使用稀疏表示的多项式和表格
+   - Delta 类型处理严格不等式
+   - 准基本变量优化减少不必要的旋转
+
+2. 算法策略：
+   - Bland 规则保证终止性
+   - 最短多项式启发式提高效率
+   - 独立性启发式选择旋转变量
+
+3. 增量求解：
+   - 支持增量添加约束
+   - 高效的回退机制
+   - 边界栈管理
+
+4. 冲突分析：
+   - Farkas 引理生成解释
+   - 支持多种插值算法
+
+5. 模型构建：
+   - 延迟计算具体值
+   - 支持实数模型和整数分割
+
+================================================================================
+关键文件列表
+================================================================================
+
+核心求解器：
+- opensmt/src/tsolvers/lasolver/LASolver.h/.cc
+- opensmt/src/tsolvers/lasolver/Simplex.h/.cc
+- opensmt/src/tsolvers/lasolver/Tableau.h/.cc
+
+数据结构：
+- opensmt/src/tsolvers/lasolver/LARefs.h
+- opensmt/src/tsolvers/lasolver/LAVar.h
+- opensmt/src/tsolvers/lasolver/LABounds.h
+- opensmt/src/tsolvers/lasolver/LRAModel.h/.cc
+- opensmt/src/tsolvers/lasolver/Delta.h
+
+辅助功能：
+- opensmt/src/tsolvers/lasolver/LAVarMapper.h
+- opensmt/src/tsolvers/lasolver/FarkasInterpolator.h/.cc
+- opensmt/src/tsolvers/lasolver/SparseMatrix.h
+
+接口：
+- opensmt/src/tsolvers/LATHandler.h
+- opensmt/src/tsolvers/TSolver.h
+- opensmt/src/tsolvers/TSolverHandler.h
+
+逻辑层：
+- opensmt/src/logics/LATheory.h
+- opensmt/src/logics/ArithLogic.h/.cc
+
+================================================================================
+文档结束
+================================================================================
+
