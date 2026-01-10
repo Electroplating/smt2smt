@@ -176,8 +176,7 @@ TheoryArithPrivate::TheoryArithPrivate(Env& env,
       d_solveIntAttempts(0u),
       d_newFacts(false),
       d_previousStatus(Result::UNKNOWN),
-      d_statistics(statisticsRegistry(), "theory::arith::"),
-      d_boundDeactivationCallback(this)
+      d_statistics(statisticsRegistry(), "theory::arith::")
 {
   // Set bound deactivation callback for quasi-basic variable support
   d_partialModel.setBoundDeactivationCallback(&d_boundDeactivationCallback);
