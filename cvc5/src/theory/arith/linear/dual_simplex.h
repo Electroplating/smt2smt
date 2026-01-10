@@ -82,13 +82,6 @@ private:
    * simplex search.
    */
   DenseMultiset d_pivotsInRound;
-  
-  /**
-   * Buffer for activated bounds (migrated from OpenSMT)
-   * Stores pairs of (variable, constraint) that need to be processed
-   * in batch at the start of searchForFeasibleSolution()
-   */
-  std::vector<std::pair<ArithVar, ConstraintP>> d_boundBuffer;
 
   Result::Status dualFindModel(bool exactResult);
 
@@ -100,13 +93,6 @@ private:
    * d_conflictVariable will be set and the conflict for this row is reported.
    */
   bool searchForFeasibleSolution(uint32_t maxIterations);
-  
-  /**
-   * Process buffered bound activations (migrated from OpenSMT)
-   * Called at the start of searchForFeasibleSolution() to batch process
-   * bound activations that were deferred
-   */
-  void processBoundBuffer();
   
 
   bool processSignals(){

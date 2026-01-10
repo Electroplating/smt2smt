@@ -21,8 +21,6 @@
 #include "theory/arith/linear/constraint.h"
 #include "theory/arith/linear/error_set.h"
 #include "theory/arith/linear/linear_equality.h"
-#include <vector>
-#include <utility>
 
 using namespace std;
 
@@ -148,10 +146,6 @@ bool DualSimplexDecisionProcedure::searchForFeasibleSolution(uint32_t remainingI
 
   Trace("arith") << "searchForFeasibleSolution" << endl;
   Assert(remainingIterations > 0);
-  
-  // Process buffered bound activations (migrated from OpenSMT)
-  // This batches bound activation processing for better performance
-  processBoundBuffer();
 
   while(remainingIterations > 0 && !d_errorSet.focusEmpty()){
     if(TraceIsOn("paranoid:check_tableau")){ d_linEq.debugCheckTableau(); }
@@ -241,32 +235,6 @@ bool DualSimplexDecisionProcedure::searchForFeasibleSolution(uint32_t remainingI
   Assert(d_errorSet.noSignals());
 
   return false;
-}
-
-void DualSimplexDecisionProcedure::processBoundBuffer() {
-  // Migrated from OpenSMT Simplex::processBufferOfActivatedBounds()
-  // Process all buffered bound activations in batch
-  
-  while (!d_boundBuffer.empty()) {
-    ArithVar var = d_boundBuffer.back().first;
-    ConstraintP bound = d_boundBuffer.back().second;
-    d_boundBuffer.pop_back();
-    
-    // Check if variable is inconsistent with the new bound
-    if (d_tableau.isBasic(var)) {
-      // Basic variable: check if out of bounds, add to error set if so
-      if (!d_variables.assignmentIsConsistent(var)) {
-        d_errorSet.signalIfInconsistent(var);
-      }
-    } else {
-      // Non-basic variable: update value if needed
-      // The actual value update is handled by the constraint system
-      // This is mainly for signaling inconsistencies
-      if (!d_variables.assignmentIsConsistent(var)) {
-        d_errorSet.signalIfInconsistent(var);
-      }
-    }
-  }
 }
 
 }  // namespace arith

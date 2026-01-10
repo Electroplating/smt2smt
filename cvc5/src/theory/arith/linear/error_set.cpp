@@ -19,7 +19,6 @@
 #include "theory/arith/linear/error_set.h"
 
 #include "theory/arith/linear/constraint.h"
-#include "theory/arith/linear/tableau.h"
 #include "util/statistics_registry.h"
 
 using namespace std;
@@ -174,7 +173,6 @@ ErrorSet::ErrorSet(StatisticsRegistry& sr,
       d_signals(),
       d_tableauSizes(tabSizes),
       d_boundLookup(lookups),
-      d_tableau(nullptr),
       d_statistics(sr)
 {}
 
@@ -197,8 +195,6 @@ void ErrorSet::recomputeAmount(ErrorInformation& ei,
     case options::ErrorSelectionRule::VAR_ORDER:
       // do nothing
       break;
-    // Note: SHORTEST_POLY is handled in ComparatorPivotRule, not here
-    // as it doesn't need precomputed amounts
   }
 }
 
@@ -265,21 +261,8 @@ bool ComparatorPivotRule::operator()(ArithVar v, ArithVar u) const {
         return cmp < 0;
       }
     }
-    // Note: SHORTEST_POLY would be added here when the option is available
-    // For now, we handle it via a workaround using SUM_METRIC or VAR_ORDER
   }
   Unreachable();
-}
-
-uint32_t ErrorSet::getRowSize(ArithVar basic) const {
-  // Migrated from OpenSMT Tableau::getPolySize()
-  // Returns the number of non-zero entries in the row
-  if(d_tableau != nullptr) {
-    return d_tableau->getRowSize(basic);
-  } else {
-    // Fallback to TableauSizes if tableau not set
-    return d_tableauSizes.getRowLength(basic);
-  }
 }
 
 void ErrorSet::update(ErrorInformation& ei){
