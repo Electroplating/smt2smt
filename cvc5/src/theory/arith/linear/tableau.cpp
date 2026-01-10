@@ -105,12 +105,14 @@ void Tableau::addRow(ArithVar basic,
   Assert(debugIsASet(variables));
   Assert(coefficients.size() == variables.size());
   Assert(!isBasic(basic));
+  Assert(!isQuasiBasic(basic));
 
   RowIndex newRow = Matrix<Rational>::addRow(coefficients, variables);
   addEntry(newRow, basic, Rational(-1));
 
   Assert(!d_basic2RowIndex.isKey(basic));
   Assert(!d_rowIndex2basic.isKey(newRow));
+  Assert(!d_quasiBasic2RowIndex.isKey(basic));
 
   d_basic2RowIndex.set(basic, newRow);
   d_rowIndex2basic.set(newRow, basic);
@@ -128,10 +130,10 @@ void Tableau::addRow(ArithVar basic,
   for(; varsIter != varsEnd; ++coeffIter, ++varsIter){
     ArithVar var = *varsIter;
 
-    if(isBasic(var)){
+    if(isBasic(var) || isQuasiBasic(var)){
       Rational coeff = *coeffIter;
 
-      RowIndex ri = basicToRowIndex(var);
+      RowIndex ri = isBasic(var) ? basicToRowIndex(var) : quasiBasicToRowIndex(var);
 
       loadRowIntoBuffer(ri);
       rowPlusBufferTimesConstant(newRow, coeff, *cccb);
@@ -147,11 +149,19 @@ void Tableau::addRow(ArithVar basic,
 }
 
 void Tableau::removeBasicRow(ArithVar basic){
-  RowIndex rid = basicToRowIndex(basic);
+  Assert(isBasic(basic) || isQuasiBasic(basic));
+  
+  RowIndex rid;
+  if(isBasic(basic)){
+    rid = basicToRowIndex(basic);
+    d_basic2RowIndex.remove(basic);
+    d_rowIndex2basic.remove(rid);
+  }else{
+    rid = quasiBasicToRowIndex(basic);
+    d_quasiBasic2RowIndex.remove(basic);
+  }
 
   removeRow(rid);
-  d_basic2RowIndex.remove(basic);
-  d_rowIndex2basic.remove(rid);
 }
 
 void Tableau::substitutePlusTimesConstant(ArithVar to, ArithVar from, const Rational& mult,  CoefficientChangeCallback& cb){
@@ -188,7 +198,46 @@ double Tableau::avgRowComplexity() const{
 }
 
 void Tableau::printBasicRow(ArithVar basic, std::ostream& out){
-  printRow(basicToRowIndex(basic), out);
+  if(isBasic(basic)){
+    printRow(basicToRowIndex(basic), out);
+  }else if(isQuasiBasic(basic)){
+    printRow(quasiBasicToRowIndex(basic), out);
+  }
+}
+
+void Tableau::quasiToBasic(ArithVar v, CoefficientChangeCallback& cb){
+  Assert(isQuasiBasic(v));
+  
+  RowIndex rid = quasiBasicToRowIndex(v);
+  
+  // The row already exists in the Matrix, we just need to:
+  // 1. Add entries from this row to the columns of non-basic variables
+  // 2. Move from quasi-basic tracking to basic tracking
+  
+  // Add the row entries to columns (they should already be there from Matrix)
+  // Actually, in cvc5's Matrix implementation, entries are automatically
+  // added to both row and column. So we just need to update tracking.
+  
+  // Move from quasi-basic to basic tracking
+  d_quasiBasic2RowIndex.remove(v);
+  d_basic2RowIndex.set(v, rid);
+  d_rowIndex2basic.set(rid, v);
+  
+  Assert(isBasic(v));
+}
+
+void Tableau::basicToQuasi(ArithVar v){
+  Assert(isBasic(v));
+  
+  RowIndex rid = basicToRowIndex(v);
+  
+  // Move from basic to quasi-basic tracking
+  // The row remains in the Matrix, but we remove it from basic tracking
+  d_basic2RowIndex.remove(v);
+  d_rowIndex2basic.remove(rid);
+  d_quasiBasic2RowIndex.set(v, rid);
+  
+  Assert(isQuasiBasic(v));
 }
 
 }  // namespace arith

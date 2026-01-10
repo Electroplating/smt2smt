@@ -49,6 +49,11 @@ private:
   typedef DenseMap<ArithVar> RowIndexToBasicMap;
   RowIndexToBasicMap d_rowIndex2basic;
 
+  // Set of quasi-basic variables (basic variables without active bounds)
+  // Quasi-basic variables have rows in the tableau but are not tracked in d_basic2RowIndex
+  typedef DenseMap<RowIndex> QuasiBasicToRowMap;
+  QuasiBasicToRowMap d_quasiBasic2RowIndex;
+
 public:
 
   Tableau() : Matrix<Rational>(Rational(0)) {}
@@ -63,9 +68,19 @@ public:
     return d_basic2RowIndex.isKey(v);
   }
 
+  bool isQuasiBasic(ArithVar v) const{
+    return d_quasiBasic2RowIndex.isKey(v);
+  }
+
+  bool isNonBasic(ArithVar v) const{
+    return !isBasic(v) && !isQuasiBasic(v);
+  }
+
   void debugPrintIsBasic(ArithVar v) const {
     if(isBasic(v)){
       Trace("model") << v << " is basic." << std::endl;
+    }else if(isQuasiBasic(v)){
+      Trace("model") << v << " is quasi-basic." << std::endl;
     }else{
       Trace("model") << v << " is non-basic." << std::endl;
     }
@@ -79,7 +94,25 @@ public:
   }
 
   RowIndex basicToRowIndex(ArithVar x) const {
+    Assert(isBasic(x));
     return d_basic2RowIndex[x];
+  }
+
+  RowIndex quasiBasicToRowIndex(ArithVar x) const {
+    Assert(isQuasiBasic(x));
+    return d_quasiBasic2RowIndex[x];
+  }
+
+  // Get row index for a variable that might be basic or quasi-basic
+  RowIndex getRowIndex(ArithVar x) const {
+    if(isBasic(x)){
+      return d_basic2RowIndex[x];
+    }else if(isQuasiBasic(x)){
+      return d_quasiBasic2RowIndex[x];
+    }else{
+      Unreachable();
+      return 0;
+    }
   }
 
   ArithVar rowIndexToBasic(RowIndex rid) const {
@@ -96,11 +129,26 @@ public:
   }
 
   RowIterator basicRowIterator(ArithVar basic) const {
-    return ridRowIterator(basicToRowIndex(basic));
+    if(isBasic(basic)){
+      return ridRowIterator(basicToRowIndex(basic));
+    }else if(isQuasiBasic(basic)){
+      return ridRowIterator(quasiBasicToRowIndex(basic));
+    }else{
+      Unreachable();
+      return ridRowIterator(0);
+    }
   }
 
   const Entry& basicFindEntry(ArithVar basic, ArithVar col) const {
-    return findEntry(basicToRowIndex(basic), col);
+    if(isBasic(basic)){
+      return findEntry(basicToRowIndex(basic), col);
+    }else if(isQuasiBasic(basic)){
+      return findEntry(quasiBasicToRowIndex(basic), col);
+    }else{
+      Unreachable();
+      static Entry dummy;
+      return dummy;
+    }
   }
 
   /**
@@ -151,6 +199,20 @@ public:
   double avgRowComplexity() const;
 
   void printBasicRow(ArithVar basic, std::ostream& out);
+
+  /**
+   * Converts a quasi-basic variable to basic variable.
+   * Precondition: v is quasi-basic
+   * Postcondition: v is basic and its row is tracked in d_basic2RowIndex
+   */
+  void quasiToBasic(ArithVar v, CoefficientChangeCallback& cb);
+
+  /**
+   * Converts a basic variable to quasi-basic variable.
+   * Precondition: v is basic
+   * Postcondition: v is quasi-basic, removed from d_basic2RowIndex but row remains
+   */
+  void basicToQuasi(ArithVar v);
 
 private:
   /* Changes the basic variable on the row for basicOld to basicNew. */
