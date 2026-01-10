@@ -5180,13 +5180,14 @@ ArithCongruenceManager* TheoryArithPrivate::getCongruenceManager()
 }
 
 void TheoryArithPrivate::boundActivated(ArithVar v){
-  // Ensure boundsActivated map has entry for v
-  while(v >= d_boundsActivated.size()){
-    d_boundsActivated.push_back(0);
+  // Get current count (or 0 if not set)
+  uint32_t currentCount = 0;
+  if(d_boundsActivated.isKey(v)){
+    currentCount = d_boundsActivated[v];
   }
 
   // If variable is quasi-basic and count is 0, convert to basic
-  if(d_tableau.isQuasiBasic(v) && d_boundsActivated[v] == 0){
+  if(d_tableau.isQuasiBasic(v) && currentCount == 0){
     // Need to convert quasi-basic to basic
     // Create a no-op callback for quasiToBasic
     NoEffectCCCB noeffect;
@@ -5196,26 +5197,33 @@ void TheoryArithPrivate::boundActivated(ArithVar v){
   }
 
   // Increase bound activation count
-  ++d_boundsActivated[v];
+  d_boundsActivated.set(v, currentCount + 1);
 }
 
 void TheoryArithPrivate::boundDeactivated(ArithVar v){
-  // Ensure variable is within bounds
-  Assert(v < d_boundsActivated.size());
-  Assert(d_boundsActivated[v] > 0);
+  // Ensure variable is in the map
+  Assert(d_boundsActivated.isKey(v));
+  uint32_t currentCount = d_boundsActivated[v];
+  Assert(currentCount > 0);
 
   // Decrease bound activation count
-  --d_boundsActivated[v];
+  uint32_t newCount = currentCount - 1;
+  if(newCount == 0){
+    // Remove from map if count becomes 0
+    d_boundsActivated.remove(v);
+  }else{
+    d_boundsActivated.set(v, newCount);
+  }
 
   // If variable is basic and count becomes 0, convert to quasi-basic
-  if(d_boundsActivated[v] == 0 && d_tableau.isBasic(v)){
+  if(newCount == 0 && d_tableau.isBasic(v)){
     d_tableau.basicToQuasi(v);
     Assert(d_tableau.isQuasiBasic(v));
   }
 }
 
 uint32_t TheoryArithPrivate::getNumOfBoundsActive(ArithVar v) const{
-  if(v >= d_boundsActivated.size()){
+  if(!d_boundsActivated.isKey(v)){
     return 0;
   }
   return d_boundsActivated[v];
