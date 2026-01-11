@@ -178,17 +178,6 @@ bool DualSimplexDecisionProcedure::searchForFeasibleSolution(uint32_t remainingI
 
     int32_t prevErrorSize CVC5_UNUSED = d_errorSet.errorSize();
 
-    // Check if x_i is still basic (it should be, since only basic variables are in error set)
-    // Note: quasi-basic variables should not be in error set (they have no active bounds)
-    // If the variable is no longer basic, it should not be in the error set
-    // This should not happen in normal operation, but we handle it gracefully by skipping
-    if(!d_linEq.getTableau().isBasic(x_i)){
-      // Variable is no longer basic, skip it
-      // It will be removed from error set when processSignals() is called
-      // (which happens after the pivot operation, if any)
-      continue;
-    }
-
     if(d_variables.cmpAssignmentLowerBound(x_i) < 0 ){
       x_j = d_linEq.selectSlackUpperBound(x_i, pf);
       if(x_j == ARITHVAR_SENTINEL ){
