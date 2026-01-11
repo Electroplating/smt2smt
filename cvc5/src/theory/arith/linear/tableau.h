@@ -134,9 +134,7 @@ public:
     }else if(isQuasiBasic(basic)){
       return ridRowIterator(quasiBasicToRowIndex(basic));
     }else{
-      // Variable is neither basic nor quasi-basic, return iterator for row 0
-      // This should not happen in normal use, but handle gracefully
-      // Note: This may assert if row 0 doesn't exist, but that's better than Unreachable()
+      Unreachable();
       return ridRowIterator(0);
     }
   }

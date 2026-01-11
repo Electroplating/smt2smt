@@ -5219,6 +5219,12 @@ void TheoryArithPrivate::boundDeactivated(ArithVar v){
   if(newCount == 0 && d_tableau.isBasic(v)){
     d_tableau.basicToQuasi(v);
     Assert(d_tableau.isQuasiBasic(v));
+    
+    // If variable is in the error set, signal it so it will be removed
+    // (quasi-basic variables have no active bounds, so they can't be inconsistent)
+    if(d_errorSet.inError(v)){
+      d_errorSet.signalVariable(v);
+    }
   }
 }
 

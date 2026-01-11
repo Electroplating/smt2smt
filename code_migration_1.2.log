@@ -367,6 +367,45 @@ OpenSMT 到 cvc5 LRA求解理论代码迁移日志 - 阶段2及后续
        状态: [已修复] 2025年
 
        ================================================================================
+       阶段2 Bug修复 - 第四次修复 (quasi-basic变量在error set中的处理)
+       ================================================================================
+
+       2025年 - 修复 quasi-basic 变量在 error set 中的处理问题
+
+       问题:
+       - 当变量变为 quasi-basic (所有bounds被停用) 时,它可能仍在 error set 中
+       - quasi-basic 变量没有 active bounds,因此不能违反 bounds,不应该在 error set 中
+       - 在 dual_simplex.cpp 的 searchForFeasibleSolution 中,从 error set 获取变量 x_i 后,
+         调用 cmpAssignmentLowerBound(x_i) 或 cmpAssignmentUpperBound(x_i) 可能会失败或返回错误结果
+       - 这导致程序行为不正确或崩溃
+
+       根本原因:
+       - boundDeactivated() 将变量从 basic 转换为 quasi-basic 时,
+         没有检查该变量是否在 error set 中并移除它
+       - quasi-basic 变量没有 active bounds,因此不能是不一致的 (inconsistent)
+       - 但 error set 可能在变量变为 quasi-basic 之后才处理它,
+         导致 quasi-basic 变量仍然在 error set 中
+
+       修复:
+       1. ✅ 修改 boundDeactivated 方法 (theory_arith_private.cpp:5218-5222)
+          - 当变量变为 quasi-basic 时,检查它是否在 error set 中
+          - 如果在 error set 中,调用 d_errorSet.signalVariable(v) 触发处理
+          - 这会导致 popSignal() 检查该变量是否仍不一致
+          - 由于 quasi-basic 变量没有 active bounds,它们不是不一致的,
+            因此会被 transitionVariableOutOfError() 移除
+
+       实现细节:
+       - 在 boundDeactivated() 中,当变量变为 quasi-basic 时,
+         调用 d_errorSet.signalVariable(v) 如果它在 error set 中
+       - signalVariable() 将变量添加到信号列表,稍后由 popSignal() 处理
+       - popSignal() 检查变量是否仍不一致,如果不一致则更新 error set,
+         否则调用 transitionVariableOutOfError() 移除它
+       - quasi-basic 变量没有 active bounds,因此 assignmentIsConsistent() 应该返回 true,
+         导致 transitionVariableOutOfError() 被调用
+
+       状态: [已修复] 2025年
+
+       ================================================================================
        下一步行动
        ================================================================================
 
