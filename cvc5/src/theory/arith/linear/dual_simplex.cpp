@@ -158,6 +158,18 @@ bool DualSimplexDecisionProcedure::searchForFeasibleSolution(uint32_t remainingI
       return false; //sat
     }
 
+    // Skip quasi-basic variables - they have no active bounds, so they can't be inconsistent
+    // They should have been removed from the error set, but handle gracefully if they're still there
+    if(d_linEq.getTableau().isQuasiBasic(x_i)){
+      Trace("arith::update") << "Skipping quasi-basic variable " << x_i << " (should not be in error set)" << endl;
+      d_errorSet.signalVariable(x_i); // Signal to remove from error set
+      bool conflict = processSignals();
+      if(conflict){
+        return true;
+      }
+      continue; // Continue to next variable
+    }
+
     --remainingIterations;
 
     bool useVarOrderPivot =

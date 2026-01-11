@@ -406,6 +406,43 @@ OpenSMT 到 cvc5 LRA求解理论代码迁移日志 - 阶段2及后续
        状态: [已修复] 2025年
 
        ================================================================================
+       阶段2 Bug修复 - 第五次修复 (dual_simplex中跳过quasi-basic变量)
+       ================================================================================
+
+       2025年 - 修复 dual_simplex 中处理 quasi-basic 变量的问题
+
+       问题:
+       - 在 dual_simplex.cpp 的 searchForFeasibleSolution 中,从 error set 获取变量 x_i 后,
+         直接调用 cmpAssignmentLowerBound(x_i) 或 cmpAssignmentUpperBound(x_i)
+       - 如果 x_i 是 quasi-basic 变量(没有 active bounds),这些调用可能会失败或返回错误结果
+       - 虽然 boundDeactivated 会 signal quasi-basic 变量以从 error set 中移除,
+         但由于 timing 问题,变量可能仍在 error set 的 focus 中
+       - 这导致程序返回错误的结果(unsat 而不是 sat)
+
+       根本原因:
+       - quasi-basic 变量没有 active bounds,因此不能违反 bounds,不应该在 error set 中
+       - 但在 dual_simplex 的循环中,我们直接从 error set 获取变量并处理,
+         没有检查它是否是 quasi-basic
+       - 虽然 popSignal() 会处理 signal 并移除 quasi-basic 变量,
+         但在处理之前,变量可能已经被 topFocusVariable() 选中
+
+       修复:
+       1. ✅ 修改 searchForFeasibleSolution 方法 (dual_simplex.cpp:161-171)
+          - 在从 error set 获取变量 x_i 后,检查它是否是 quasi-basic
+          - 如果是 quasi-basic,跳过它(因为它不应该在 error set 中)
+          - 调用 d_errorSet.signalVariable(x_i) 触发处理,从 error set 中移除
+          - 调用 processSignals() 处理信号
+          - 使用 continue 继续下一个变量
+
+       实现细节:
+       - 使用 d_linEq.getTableau().isQuasiBasic(x_i) 检查变量是否是 quasi-basic
+       - 如果是 quasi-basic,调用 signalVariable() 和 processSignals() 来移除它
+       - 这确保了 quasi-basic 变量不会被处理,避免了 cmpAssignmentLowerBound/UpperBound 的错误调用
+       - 这是一个防御性检查,确保即使变量仍在 error set 中,也不会导致错误
+
+       状态: [已修复] 2025年
+
+       ================================================================================
        下一步行动
        ================================================================================
 
