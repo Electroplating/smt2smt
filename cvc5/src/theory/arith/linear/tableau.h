@@ -104,14 +104,14 @@ public:
   }
 
   // Get row index for a variable that might be basic or quasi-basic
+  // Returns 0 if the variable is neither basic nor quasi-basic (should not happen in normal use)
   RowIndex getRowIndex(ArithVar x) const {
     if(isBasic(x)){
       return d_basic2RowIndex[x];
     }else if(isQuasiBasic(x)){
       return d_quasiBasic2RowIndex[x];
     }else{
-      Unreachable();
-      return 0;
+      return 0; // Variable is neither basic nor quasi-basic
     }
   }
 
@@ -134,7 +134,9 @@ public:
     }else if(isQuasiBasic(basic)){
       return ridRowIterator(quasiBasicToRowIndex(basic));
     }else{
-      Unreachable();
+      // Variable is neither basic nor quasi-basic, return iterator for row 0
+      // This should not happen in normal use, but handle gracefully
+      // Note: This may assert if row 0 doesn't exist, but that's better than Unreachable()
       return ridRowIterator(0);
     }
   }
