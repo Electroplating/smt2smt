@@ -800,6 +800,11 @@ ArithVar LinearEqualityModule::selectSlack(ArithVar x_i, VarPreferenceFunction p
 }
 
 const Tableau::Entry* LinearEqualityModule::selectSlackEntry(ArithVar x_i, bool above) const{
+  // Apply independence heuristic: prefer variables with smaller column length (more independent)
+  // This matches OpenSMT's findNonBasicForPivotByHeuristic implementation
+  const Tableau::Entry* bestEntry = NULL;
+  ArithVar bestNonbasic = ARITHVAR_SENTINEL;
+
   for(Tableau::RowIterator iter = d_tableau.basicRowIterator(x_i); !iter.atEnd();  ++iter){
     const Tableau::Entry& entry = *iter;
     ArithVar nonbasic = entry.getColVar();
@@ -807,17 +812,32 @@ const Tableau::Entry* LinearEqualityModule::selectSlackEntry(ArithVar x_i, bool 
 
     const Rational& a_ij = entry.getCoefficient();
     int sgn = a_ij.sgn();
-    if(above && isAcceptableSlack<true>(sgn, nonbasic)){
-      //If one of the above conditions is met, we have found an acceptable
-      //nonbasic variable to pivot x_i with.  We can now choose which one we
-      //prefer the most.
-      return &entry;
-    }else if(!above && isAcceptableSlack<false>(sgn, nonbasic)){
-      return &entry;
+    bool acceptable = (above && isAcceptableSlack<true>(sgn, nonbasic)) ||
+                      (!above && isAcceptableSlack<false>(sgn, nonbasic));
+
+    if(acceptable){
+      if(bestEntry == NULL){
+        // First acceptable candidate
+        bestEntry = &entry;
+        bestNonbasic = nonbasic;
+      }else{
+        // Independence heuristic: prefer variable with smaller column length
+        // A variable with smaller column length appears in fewer rows, making it more independent
+        uint32_t bestColLen = d_tableau.getColLength(bestNonbasic);
+        uint32_t currColLen = d_tableau.getColLength(nonbasic);
+        if(currColLen < bestColLen){
+          bestEntry = &entry;
+          bestNonbasic = nonbasic;
+        }else if(currColLen == bestColLen && nonbasic < bestNonbasic){
+          // Tie-breaking: use variable order (lower ID preferred)
+          bestEntry = &entry;
+          bestNonbasic = nonbasic;
+        }
+      }
     }
   }
 
-  return NULL;
+  return bestEntry;
 }
 
 void LinearEqualityModule::startTrackingBoundCounts(){
