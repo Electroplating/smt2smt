@@ -217,9 +217,6 @@ bool DualSimplexDecisionProcedure::searchForFeasibleSolution(uint32_t remainingI
         const DeltaRational& u_i = d_variables.getUpperBound(x_i);
         d_linEq.pivotAndUpdate(x_i, x_j, u_i);
       }
-    }else{
-      // Variable is no longer inconsistent, remove from error set and continue
-      continue;
     }
     Assert(x_j != ARITHVAR_SENTINEL);
 
