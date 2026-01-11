@@ -590,12 +590,11 @@ bool TheoryArithPrivate::AssertLower(ConstraintP constraint){
     d_tableau.debugPrintIsBasic(x_i);
   }
 
-  if(!d_tableau.isBasic(x_i) && !d_tableau.isQuasiBasic(x_i)){
+  if(!d_tableau.isBasic(x_i)){
     if(d_partialModel.getAssignment(x_i) < c_i){
       d_linEq.update(x_i, c_i);
     }
-  }else if(d_tableau.isBasic(x_i)){
-    // Only signal basic variables (not quasi-basic, as they have no active bounds)
+  }else{
     d_errorSet.signalVariable(x_i);
   }
 
@@ -740,12 +739,11 @@ bool TheoryArithPrivate::AssertUpper(ConstraintP constraint){
     d_tableau.debugPrintIsBasic(x_i);
   }
 
-  if(!d_tableau.isBasic(x_i) && !d_tableau.isQuasiBasic(x_i)){
+  if(!d_tableau.isBasic(x_i)){
     if(d_partialModel.getAssignment(x_i) > c_i){
       d_linEq.update(x_i, c_i);
     }
-  }else if(d_tableau.isBasic(x_i)){
-    // Only signal basic variables (not quasi-basic, as they have no active bounds)
+  }else{
     d_errorSet.signalVariable(x_i);
   }
 
@@ -847,12 +845,11 @@ bool TheoryArithPrivate::AssertEquality(ConstraintP constraint){
     d_tableau.debugPrintIsBasic(x_i);
   }
 
-  if(!d_tableau.isBasic(x_i) && !d_tableau.isQuasiBasic(x_i)){
+  if(!d_tableau.isBasic(x_i)){
     if(!(d_partialModel.getAssignment(x_i) == c_i)){
       d_linEq.update(x_i, c_i);
     }
-  }else if(d_tableau.isBasic(x_i)){
-    // Only signal basic variables (not quasi-basic, as they have no active bounds)
+  }else{
     d_errorSet.signalVariable(x_i);
   }
 
