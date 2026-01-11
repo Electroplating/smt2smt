@@ -518,6 +518,38 @@ OpenSMT 到 cvc5 LRA求解理论代码迁移日志 - 阶段2及后续
        状态: [已回退] 2025年
 
        ================================================================================
+       阶段2 Bug修复 - 进一步回退 boundActivated 调用
+       ================================================================================
+
+       2025年 - 进一步回退导致错误结果的可疑修改
+
+       问题:
+       - 程序仍然返回错误结果(unsat 而不是 sat)
+       - 决定进一步回退 boundActivated 调用
+
+       回退的修改:
+
+       5. ✅ 回退 AssertLower/AssertUpper/AssertEquality 中的 boundActivated 调用 (步骤2.2)
+          - 移除了 boundActivated 调用和相关检查代码
+          - 移除了 hadLowerBound/hadUpperBound 检查
+          - 恢复了原始逻辑:直接设置边界约束,不跟踪边界激活
+          - 位置: theory_arith_private.cpp 的 AssertLower(563-572行), AssertUpper(712-721行), AssertEquality(809-824行)
+          - 原因:boundActivated 会触发 quasiToBasic 转换,可能导致问题
+
+       保留的修改:
+       - Tableau 准基本变量支持(步骤2.1) - 核心数据结构,保留但不使用
+       - TheoryArithPrivate 边界激活计数机制(步骤2.2) - boundActivated/boundDeactivated 方法保留但不被调用
+       - 边界停用回调机制(步骤2.3) - 回调机制保留但 boundDeactivated 不会被正确调用(因为没有计数)
+
+       注意:
+       - 虽然 boundActivated 不再被调用,但 boundActivated 和 boundDeactivated 方法仍然存在
+       - 回调机制仍然存在,但 boundDeactivated 不会正确工作(因为没有激活计数)
+       - Tableau 中的准基本变量数据结构仍然存在,但不会被使用
+       - 这意味着准基本变量机制完全失效,但至少不会导致错误结果
+
+       状态: [已回退] 2025年
+
+       ================================================================================
        下一步行动
        ================================================================================
 

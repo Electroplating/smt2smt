@@ -560,16 +560,7 @@ bool TheoryArithPrivate::AssertLower(ConstraintP constraint){
   d_currentPropagationList.push_back(constraint);
   d_currentPropagationList.push_back(d_partialModel.getLowerBoundConstraint(x_i));
 
-  // Track bound activation for quasi-basic variable support
-  // Check if this is actually activating a new bound (not just tightening)
-  bool hadLowerBound = d_partialModel.hasLowerBound(x_i);
-  
   d_partialModel.setLowerBoundConstraint(constraint);
-
-  // Only count as activation if variable didn't have a lower bound before
-  if(!hadLowerBound){
-    boundActivated(x_i);
-  }
 
   if(d_cmEnabled){
     if(d_congruenceManager.isWatchedVariable(x_i)){
@@ -709,16 +700,7 @@ bool TheoryArithPrivate::AssertUpper(ConstraintP constraint){
   d_currentPropagationList.push_back(d_partialModel.getUpperBoundConstraint(x_i));
   //It is fine if this is NullConstraint
 
-  // Track bound activation for quasi-basic variable support
-  // Check if this is actually activating a new bound (not just tightening)
-  bool hadUpperBound = d_partialModel.hasUpperBound(x_i);
-  
   d_partialModel.setUpperBoundConstraint(constraint);
-
-  // Only count as activation if variable didn't have an upper bound before
-  if(!hadUpperBound){
-    boundActivated(x_i);
-  }
 
   if(d_cmEnabled){
     if(d_congruenceManager.isWatchedVariable(x_i)){
@@ -806,22 +788,8 @@ bool TheoryArithPrivate::AssertEquality(ConstraintP constraint){
   d_currentPropagationList.push_back(d_partialModel.getLowerBoundConstraint(x_i));
   d_currentPropagationList.push_back(d_partialModel.getUpperBoundConstraint(x_i));
 
-  // Track bound activation for quasi-basic variable support (equality activates both bounds)
-  // Check if this is actually activating new bounds (not just tightening)
-  bool hadLowerBound = d_partialModel.hasLowerBound(x_i);
-  bool hadUpperBound = d_partialModel.hasUpperBound(x_i);
-  
   d_partialModel.setUpperBoundConstraint(constraint);
   d_partialModel.setLowerBoundConstraint(constraint);
-
-  // Only count as activation if variable didn't have the corresponding bound before
-  // Equality sets both bounds, so check each separately
-  if(!hadLowerBound){
-    boundActivated(x_i);
-  }
-  if(!hadUpperBound){
-    boundActivated(x_i);
-  }
 
   if(d_cmEnabled){
     if(d_congruenceManager.isWatchedVariable(x_i)){
